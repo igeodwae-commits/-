@@ -1,5 +1,5 @@
 /**
- * 이거돼? — AI 기반 약물 판독 & 위염 복약 가이드
+ * 이거돼? — AI 기반 약물 판독 & 복약 가이드
  * 
  * Stack: React + Vite + Tailwind CSS + Firebase + Gemini 2.5 Flash
  * Author: 이거돼 Team
@@ -381,7 +381,7 @@ function ChatView({ result, userConditions, onBack }) {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: `안녕하세요! 👋 **${result?.summary || '분석된 약품'}**에 대해 무엇이든 물어보세요.\n\n위염 관련 복용 주의사항이나 다른 약과의 상호작용 등을 도와드릴 수 있어요.`,
+      content: `안녕하세요! 👋 **${result?.summary || '분석된 약품'}**에 대해 무엇이든 물어보세요.\n\n복용 방법, 부작용, 다른 약과의 상호작용 등을 도와드릴 수 있어요.`,
       ts: Date.now(),
     }
   ])
@@ -504,7 +504,7 @@ function ChatView({ result, userConditions, onBack }) {
           <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
             {[
               '식전에 먹어도 돼요?',
-              '위염에 영향이 있나요?',
+              '어떤 효과가 있나요?',
               '다른 약과 같이 먹어도 되나요?',
               '부작용이 뭔가요?',
             ].map(q => (
@@ -640,7 +640,7 @@ function OnboardingView({ onComplete }) {
       .filter(c => selected.has(c.id))
       .map(c => c.label)
       .join(', ')
-    onComplete(labels || '위염')
+    onComplete(labels || '해당 없음')
   }
 
   return (
@@ -734,14 +734,7 @@ function HomeView({
           </button>
         </div>
 
-        {/* 기저질환 뱃지 */}
-        <div className="flex flex-wrap gap-1.5">
-          {userConditions.split(', ').map((c, i) => (
-            <span key={i} className="text-xs bg-white/20 text-white px-2.5 py-1 rounded-full font-medium">
-              🏥 {c}
-            </span>
-          ))}
-        </div>
+
       </div>
 
       {/* 메인 컨텐츠 */}
@@ -935,9 +928,7 @@ function CameraView({ onCapture, onCancel }) {
 // ─── 메인 앱 컴포넌트 ─────────────────────────────────────────────────────────
 export default function App() {
   // 사용자 설정
-  const [userConditions, setUserConditions] = useState(() =>
-    localStorage.getItem('igeordwae_conditions') || ''
-  )
+  const [userConditions, setUserConditions] = useState('일반 사용자')
 
   // 앱 상태
   const [view, setView] = useState('home') // onboarding | home | camera | chat | history
@@ -1140,8 +1131,6 @@ export default function App() {
   }
 
   // ─ 렌더링 ─────────────────────────────────────────────────────────────────
-  if (!userConditions) return <OnboardingView onComplete={handleOnboardingComplete} />
-
   if (view === 'camera') {
     return <CameraView onCapture={handleCameraCapture} onCancel={() => setView('home')} />
   }
