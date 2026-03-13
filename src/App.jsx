@@ -12,7 +12,7 @@ import {
   Camera, ImagePlus, Send, ChevronRight, Clock, AlertTriangle,
   CheckCircle, XCircle, Pill, MessageCircle, History, Home,
   Loader2, Sparkles, RefreshCw, ChevronLeft, Info, Star,
-  Flame, Shield, Zap, X
+  Shield, Zap, X
 } from 'lucide-react'
 
 // ─── Firebase SDK (동적 임포트로 번들 최적화) ─────────────────────────────────
@@ -139,7 +139,6 @@ JSON 형식으로만 응답하세요. 마크다운 없이 순수 JSON만:
   "description": "약의 주요 효능 및 작용 기전 (2-3문장)",
   "warnings": "위염 환자 특화 주의사항",
   "dosageGuide": "복용 방법 (식전/식후/취침전, 용량, 빈도)",
-  "gastritisImpact": 위염 영향 점수 (1=매우안전 ~ 10=매우위험, 숫자만),
   "interactions": ["병용 주의 약물/음식"],
   "alternatives": "대체약 또는 보완 방법",
   "activeIngredients": ["주요 성분명"],
@@ -168,7 +167,6 @@ const buildChatSystemPrompt = (analysisResult, userConditions) => `
 현재 분석된 약품 정보:
 - 약품명: \${analysisResult?.summary || '미분석'}
 - 안전도: \${analysisResult?.status || '-'}
-- 위염 영향: \${analysisResult?.gastritisImpact || '-'}/10
 - 사용자 기저질환: \${userConditions}
 `
 
@@ -213,29 +211,7 @@ const STATUS_MAP = {
 }
 
 // ─── 위험도 게이지 컴포넌트 ───────────────────────────────────────────────────
-function GastritisGauge({ score }) {
-  const pct = Math.min(Math.max((score / 10) * 100, 0), 100)
-  const color = score <= 3 ? '#10b981' : score <= 6 ? '#f59e0b' : '#ef4444'
-  const label = score <= 3 ? '위 건강 영향 낮음' : score <= 6 ? '중간 수준 주의' : '위 자극 높음'
 
-  return (
-    <div className="space-y-2">
-      <div className="flex justify-between items-center">
-        <span className="text-xs font-medium text-slate-500 flex items-center gap-1">
-          <Flame size={12} /> 위염 영향 지수
-        </span>
-        <span className="text-xs font-bold" style={{ color }}>{score}/10</span>
-      </div>
-      <div className="relative h-3 bg-slate-100 rounded-full overflow-hidden">
-        <div
-          className="score-bar h-full rounded-full transition-all"
-          style={{ '--target-width': `${pct}%`, width: `${pct}%`, background: color }}
-        />
-      </div>
-      <p className="text-xs text-slate-400 text-center">{label}</p>
-    </div>
-  )
-}
 
 // ─── 분석 결과 카드 ───────────────────────────────────────────────────────────
 function ResultCard({ result, onChat, onRetry }) {
@@ -306,8 +282,7 @@ function ResultCard({ result, onChat, onRetry }) {
 
         <p className="text-sm text-slate-600 leading-relaxed">{result.description}</p>
 
-        {/* 위염 게이지 */}
-        <GastritisGauge score={result.gastritisImpact || 5} />
+
       </div>
 
       {/* 핵심 정보 */}
