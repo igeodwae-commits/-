@@ -36,9 +36,10 @@ const firebaseConfig = {
 }
 
 const APP_ID = import.meta.env.VITE_APP_ID || 'igeordwae-dev'
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY
-const GEMINI_MODEL = 'gemini-2.5-flash-preview-05-20'
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta'
+const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY
+const GROQ_MODEL = 'llama-3.3-70b-versatile'
+const GROQ_VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct'
+const GROQ_BASE = 'https://api.groq.com/openai/v1'
 
 // Firebase 초기화 (중복 방지)
 let app, auth, db
@@ -54,17 +55,20 @@ try {
 const LOGS_PATH = () =>
   collection(db, `artifacts/${APP_ID}/public/data/analysis_logs`)
 
-// ─── Gemini API 유틸 (지수 백오프 재시도) ────────────────────────────────────
-async function safeFetchGemini(endpoint, body, retries = 3, delay = 1000) {
-  if (!GEMINI_API_KEY) throw new Error('VITE_GEMINI_API_KEY 환경변수가 설정되지 않았습니다.')
+// ─── OpenAI API 유틸 (지수 백오프 재시도) ────────────────────────────────────
+async function safeFetchGroq(body, retries = 3, delay = 1000) {
+  if (!GROQ_API_KEY) throw new Error('VITE_GROQ_API_KEY 환경변수가 설정되지 않았습니다.')
 
   for (let i = 0; i < retries; i++) {
     try {
       const res = await fetch(
-        `${GEMINI_BASE}/${endpoint}?key=${GEMINI_API_KEY}`,
+        `${GROQ_BASE}/chat/completions`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${GROQ_API_KEY}`,
+          },
           body: JSON.stringify(body),
         }
       )
@@ -96,43 +100,76 @@ async function safeFetchGemini(endpoint, body, retries = 3, delay = 1000) {
 // ─── 약물 분석 프롬프트 ───────────────────────────────────────────────────────
 const buildVisionPrompt = (userConditions) => `
 당신은 대한민국 공인 약사이자 위장내과 전문의입니다.
-사용자는 현재 다음과 같은 기저질환을 가지고 있습니다: ${userConditions}
+사용자의 기저질환: ${userConditions}
 
-업로드된 이미지에서 의약품을 식별하고, 아래 JSON 형식으로만 응답하세요.
-다른 텍스트나 마크다운은 절대 포함하지 마세요.
+## 이미지 분석 지침
+이미지에서 다음을 모두 활용하여 약품을 식별하세요:
+1. 약 포장지/박스의 제품명, 브랜드명 텍스트
+2. 약 봉투에 인쇄된 약품명, 성분명
+3. 알약/캡슐의 색상, 모양, 각인 문자
+4. 포장 디자인 및 색상 조합
+5. 한글/영문 혼합 표기 모두 인식
+
+## 한국 주요 약품 참고
+- 타이레놀(아세트아미노펜): 해열진통, 위 자극 적음
+- 부루펜/이부프로펜: 소염진통, 위 자극 강함 주의
+- 게보린: 복합진통제, 위염 주의
+- 판콜/판피린: 종합감기약
+- 훼스탈/베아제: 소화효소제, 위염에 안전
+- 겔포스/개비스콘: 위산중화제, 위염에 유익
+- 잔탁/오메프라졸: 위산억제제
+- 비타민C/종합비타민: 일반적으로 안전
+
+## 출력 말투 규칙 (매우 중요)
+- summary: 반드시 제품명(성분명) 형식으로. 예: "타이레놀(아세트아미노펜)" / "판콜에이(복합감기약)"
+- description: 환자가 이해할 수 있는 쉬운 말로. "~로 추정됩니다" 절대 금지. 약 이름 먼저, 효능 설명 후.
+  좋은 예: "타이레놀은 열을 내리고 통증을 줄여주는 해열진통제예요. 위에 자극이 적어서 위염 환자도 비교적 안전하게 드실 수 있어요."
+  나쁜 예: "이 약 조합을 보니 감기약인 것으로 추정됩니다."
+- warnings: 쉬운 말로. "식후 30분에 드세요", "공복에는 피하세요" 처럼 구체적으로
+- dosageGuide: "하루 3번, 식후 30분에 1정씩" 처럼 구체적으로
+
+JSON 형식으로만 응답하세요. 마크다운 없이 순수 JSON만:
 
 {
   "status": "✅안전 | ⚠️주의 | ❌위험",
   "statusCode": "safe | caution | danger",
-  "statusText": "한 줄 분류 설명 (예: 위장 보호제 / 위장 자극 가능성)",
+  "statusText": "한 줄 분류 설명",
+  "oneLineSummary": "비전문가를 위한 한줄 요약. 예: 감기에 도움이 돼요! / 위에 자극이 강해서 주의가 필요해요! / 위염 환자에게 위험할 수 있어요!",
   "summary": "의약품 공식 명칭 (성분명 포함)",
   "description": "약의 주요 효능 및 작용 기전 (2-3문장)",
-  "warnings": "위염 환자 특화 주의사항 (위 점막 자극 여부, 복용 주의사항)",
+  "warnings": "위염 환자 특화 주의사항",
   "dosageGuide": "복용 방법 (식전/식후/취침전, 용량, 빈도)",
-  "gastritisImpact": 위염 증상에 미치는 영향 점수 (1=매우안전 ~ 10=매우위험, 숫자만),
-  "interactions": ["함께 복용 시 주의할 약물 또는 음식 목록"],
-  "alternatives": "대체약 또는 보완 방법 (해당시)",
-  "activeIngredients": ["주요 성분명 목록"],
+  "gastritisImpact": 위염 영향 점수 (1=매우안전 ~ 10=매우위험, 숫자만),
+  "interactions": ["병용 주의 약물/음식"],
+  "alternatives": "대체약 또는 보완 방법",
+  "activeIngredients": ["주요 성분명"],
   "drugType": "전문의약품 | 일반의약품 | 한약제제",
-  "confidence": 이미지 인식 신뢰도 (0.0~1.0, 숫자만)
+  "confidence": 인식 신뢰도 (0.0~1.0)
 }
 
-이미지에서 약품을 식별할 수 없다면:
-{"status": "❌위험", "statusCode": "unidentified", "summary": "약품 미인식", "description": "이미지에서 약품을 인식할 수 없습니다. 더 선명한 사진을 업로드해주세요.", "confidence": 0}
+약품을 식별할 수 없으면:
+{"status": "❌위험", "statusCode": "unidentified", "summary": "약품 미인식", "description": "이미지에서 약품을 인식할 수 없습니다. 약 이름이 보이도록 더 가까이서 촬영해주세요.", "confidence": 0}
 `
 
 const buildChatSystemPrompt = (analysisResult, userConditions) => `
-당신은 '이거돼?' 앱의 AI 약사 어시스턴트입니다. 
-친근하고 전문적인 한국어로 답변하세요. 답변은 간결하게 (최대 3-4문장) 유지하세요.
+당신은 '이거돼?' 앱의 AI 약사입니다.
+사용자는 의학 지식이 없는 일반 환자입니다. 쉽고 친근한 말투로 설명하세요.
+
+## 답변 규칙
+1. 반드시 약품명/성분명을 먼저 말하고 설명하세요
+   좋은 예: "타이레놀(아세트아미노펜)은 해열진통제예요. 위에 자극이 적어서 위염 환자도 비교적 안전하게 드실 수 있어요."
+   나쁜 예: "이 약 조합을 보니 감기약인 것으로 추정됩니다."
+2. 전문 용어는 반드시 쉬운 말로 풀어서 설명하세요
+   좋은 예: "아세트아미노펜(타이레놀 성분)이 포함되어 있어요"
+   나쁜 예: "NSAIDs 계열 약물로 COX-2를 억제합니다"
+3. 답변은 3-4문장으로 짧고 명확하게
+4. 위험하거나 확실하지 않으면 "약사나 의사에게 꼭 확인해보세요"라고 안내
 
 현재 분석된 약품 정보:
-- 약품명: ${analysisResult?.summary || '미분석'}
-- 안전도: ${analysisResult?.status || '-'}
-- 위염 영향: ${analysisResult?.gastritisImpact || '-'}/10
-- 사용자 기저질환: ${userConditions}
-
-의학적 판단이 필요한 심각한 문제라면 반드시 "전문의 상담을 권장합니다"를 안내하세요.
-확실하지 않은 정보는 추측하지 말고 솔직히 모른다고 하세요.
+- 약품명: \${analysisResult?.summary || '미분석'}
+- 안전도: \${analysisResult?.status || '-'}
+- 위염 영향: \${analysisResult?.gastritisImpact || '-'}/10
+- 사용자 기저질환: \${userConditions}
 `
 
 // ─── 상태 색상 / 아이콘 매핑 ──────────────────────────────────────────────────
@@ -227,8 +264,30 @@ function ResultCard({ result, onChat, onRetry }) {
     )
   }
 
+  // 추천 배너 설정
+  const RECOMMEND_MAP = {
+    safe:    { text: '추천합니다!',        bg: 'bg-emerald-500', emoji: '✅' },
+    caution: { text: '주의가 필요해요!',   bg: 'bg-amber-500',   emoji: '⚠️' },
+    danger:  { text: '추천하지 않습니다!', bg: 'bg-red-500',     emoji: '❌' },
+  }
+  const rec = RECOMMEND_MAP[statusCode] || RECOMMEND_MAP.caution
+
   return (
     <div className={`rounded-3xl border-2 ${s.border} ${s.bg} overflow-hidden animate-slide-up`}>
+
+      {/* 크고 굵은 추천 배너 */}
+      <div className={`${rec.bg} px-5 py-4 flex items-center justify-center gap-2`}>
+        <span className="text-2xl">{rec.emoji}</span>
+        <p className="text-white font-black text-2xl tracking-tight">{rec.text}</p>
+      </div>
+
+      {/* 한줄 요약 */}
+      {result.oneLineSummary && (
+        <div className="px-5 py-3 bg-white border-b border-slate-100">
+          <p className="text-slate-700 font-semibold text-sm text-center">{result.oneLineSummary}</p>
+        </div>
+      )}
+
       {/* 헤더 */}
       <div className="p-5 space-y-3">
         <div className="flex items-start justify-between gap-2">
@@ -243,7 +302,6 @@ function ResultCard({ result, onChat, onRetry }) {
               </span>
             </div>
           </div>
-          <span className={`text-2xl font-black shrink-0`}>{result.status?.split(' ')[0]}</span>
         </div>
 
         <p className="text-sm text-slate-600 leading-relaxed">{result.description}</p>
@@ -371,32 +429,22 @@ function ChatView({ result, userConditions, onBack }) {
     setLoading(true)
 
     try {
-      // 대화 히스토리 구성 (시스템 메시지 포함)
       const history = messages
-        .slice(1) // 첫 인사 메시지 제외
-        .map(m => ({
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }]
-        }))
+        .slice(1)
+        .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
 
-      const data = await safeFetchGemini(
-        `models/${GEMINI_MODEL}:generateContent`,
-        {
-          system_instruction: {
-            parts: [{ text: buildChatSystemPrompt(result, userConditions) }]
-          },
-          contents: [
-            ...history,
-            { role: 'user', parts: [{ text }] }
-          ],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 600,
-          }
-        }
-      )
+      const data = await safeFetchGroq({
+        model: GROQ_MODEL,
+        messages: [
+          { role: 'system', content: buildChatSystemPrompt(result, userConditions) },
+          ...history,
+          { role: 'user', content: text }
+        ],
+        temperature: 0.7,
+        max_tokens: 600,
+      })
 
-      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || '죄송합니다, 응답을 가져오지 못했어요.'
+      const reply = data.choices?.[0]?.message?.content || '죄송합니다, 응답을 가져오지 못했어요.'
       setMessages(prev => [...prev, { role: 'assistant', content: reply, ts: Date.now() }])
     } catch (e) {
       setMessages(prev => [...prev, {
@@ -993,17 +1041,16 @@ export default function App() {
     })
   }, [])
 
-  // ─ Gemini Vision 분석 ─────────────────────────────────────────────────────
+  // ─ GPT-4o Vision 분석 ───────────────────────────────────────────────────
   const analyzeImage = useCallback(async (base64, mimeType = 'image/jpeg') => {
-    if (!GEMINI_API_KEY) {
-      // 데모 모드 (API 키 없을 때)
+    if (!GROQ_API_KEY) {
       await new Promise(r => setTimeout(r, 2000))
-      const demoResult = {
+      return {
         status: '⚠️주의',
         statusCode: 'caution',
         statusText: '데모 모드 (API 키 미설정)',
         summary: 'API 키를 설정하면 실제 분석이 가능합니다',
-        description: '.env 파일에 VITE_GEMINI_API_KEY를 설정해주세요. 설정 후 실제 약품 분석이 가능합니다.',
+        description: '.env 파일에 VITE_GROQ_API_KEY를 설정해주세요.',
         warnings: 'API 키 없이는 실제 분석을 수행할 수 없습니다.',
         dosageGuide: '.env.example 파일을 참고하여 환경변수를 설정해주세요.',
         gastritisImpact: 5,
@@ -1013,27 +1060,23 @@ export default function App() {
         drugType: '일반의약품',
         confidence: 0,
       }
-      return demoResult
     }
 
-    const data = await safeFetchGemini(
-      `models/${GEMINI_MODEL}:generateContent`,
-      {
-        contents: [{
-          parts: [
-            { text: buildVisionPrompt(userConditions) },
-            { inline_data: { mime_type: mimeType, data: base64 } }
-          ]
-        }],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 1200,
-          responseMimeType: 'application/json',
-        }
-      }
-    )
+    const data = await safeFetchGroq({
+      model: GROQ_VISION_MODEL,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: buildVisionPrompt(userConditions) },
+          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } }
+        ]
+      }],
+      temperature: 0.1,
+      max_tokens: 1200,
+      response_format: { type: 'json_object' },
+    })
 
-    const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
+    const raw = data.choices?.[0]?.message?.content || '{}'
     try {
       const clean = raw.replace(/```json|```/g, '').trim()
       return JSON.parse(clean)
