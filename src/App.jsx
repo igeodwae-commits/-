@@ -168,6 +168,47 @@ async function fetchPillByFeature({ color, shape, imprint, form }) {
   }
 }
 
+// ─── 알약 종합 분석 (여러 알약 + 증상 비교) ─────────────────────────────────
+async function analyzePillsCombined(pillResults, symptom) {
+  if (!GROQ_API_KEY || pillResults.length === 0) return null
+  try {
+    const pillSummary = pillResults
+      .map((p, i) => `${i+1}. ${p.summary} - ${p.description}`)
+      .join('\n')
+
+    const data = await safeFetchGroq({
+      model: GROQ_MODEL,
+      messages: [{
+        role: 'system',
+        content: '당신은 친절한 AI 약사입니다. 쉽고 짧게 설명하세요. 전문용어 금지.'
+      }, {
+        role: 'user',
+        content: `다음 약들을 분석해주세요:
+${pillSummary}
+
+사용자 증상: ${symptom || '없음'}
+
+아래 JSON만 반환하세요 (마크다운 금지):
+{
+  "combinedUse": "이 약들을 함께 먹는 이유 1-2문장 (쉬운 말로)",
+  "matchScore": "증상과 일치도 (높음/보통/낮음/알수없음)",
+  "matchReason": "증상과 맞는지 이유 1문장",
+  "recommendation": "추천합니다 | 주의가 필요해요 | 확인이 필요해요",
+  "recommendCode": "safe | caution | danger",
+  "oneLineSummary": "20자 이내 핵심 한줄 요약"
+}`
+      }],
+      temperature: 0.3,
+      max_tokens: 300,
+    })
+    const raw = data.choices?.[0]?.message?.content || '{}'
+    return JSON.parse(raw.replace(/```json|```/g, '').trim())
+  } catch (e) {
+    console.warn('종합 분석 실패:', e.message)
+    return null
+  }
+}
+
 // ─── 알약 1개 전체 분석 (낱알식별 → 의약품개요 → 종합) ──────────────────────
 async function analyzeSinglePill(pillFeature, symptomHint) {
   // 1단계: 식약처 낱알식별로 약품 찾기
@@ -186,20 +227,26 @@ async function analyzeSinglePill(pillFeature, symptomHint) {
 
   // 3단계: 결과 종합
   if (pillData) {
+    // 식약처 효능 텍스트 요약 (AI로)
+    let efcySummary = drugInfo?.efcyQesitm || ''
+    let atpnSummary = drugInfo?.atpnQesitm || ''
+    let useSummary = drugInfo?.useMethodQesitm || ''
+    if (efcySummary.length > 100) efcySummary = await summarizeMfdsText('효능', efcySummary)
+    if (atpnSummary.length > 100) atpnSummary = await summarizeMfdsText('주의사항', atpnSummary)
+    if (useSummary.length > 80) useSummary = await summarizeMfdsText('복용법', useSummary)
+
     return {
       statusCode: 'caution',
       statusText: '복용 전 확인하세요',
-      summary: pillData.itemName || '약품명 확인됨',
+      summary: pillData.itemName || `${pillFeature.color} ${pillFeature.shape} 알약`,
       drugNameForSearch: pillData.itemName,
-      description: drugInfo?.efcyQesitm
-        ? drugInfo.efcyQesitm.slice(0, 80)
-        : `${pillFeature.color} ${pillFeature.shape} 알약이에요.`,
-      warnings: drugInfo?.atpnQesitm?.slice(0, 80) || '복용 전 약사에게 확인하세요.',
-      dosageGuide: drugInfo?.useMethodQesitm?.slice(0, 60) || '-',
-      interactions: [],
+      description: efcySummary || `${pillFeature.color}색 ${pillFeature.shape} 알약이에요.`,
+      warnings: atpnSummary || '복용 전 약사에게 확인하세요.',
+      dosageGuide: useSummary || '-',
+      interactions: drugInfo?.intrcQesitm ? [drugInfo.intrcQesitm.slice(0, 60)] : [],
       activeIngredients: pillData.itemName ? [pillData.itemName] : [],
-      drugType: '처방약',
-      confidence: pillData ? 0.85 : 0.3,
+      drugType: drugInfo ? '처방약' : '-',
+      confidence: 0.85,
       pillColor: pillFeature.color,
       pillShape: pillFeature.shape,
       pillImprint: pillFeature.imprint,
@@ -324,8 +371,8 @@ function PillListCard({ pillResults, onSelectPill, selectedIdx }) {
                   <p className="font-bold text-sm text-slate-800 truncate">{pill.summary}</p>
                   {pill.mfdsFound && <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded-full font-semibold shrink-0">식약처</span>}
                 </div>
-                <p className="text-xs text-slate-400 mt-0.5">{pill.pillColor} · {pill.pillShape}{pill.pillImprint ? ` · ${pill.pillImprint}` : ''}</p>
-                <p className="text-xs text-slate-500 mt-1 line-clamp-1">{pill.description}</p>
+                <p className="text-xs text-slate-400 mt-0.5">{pill.pillColor} · {pill.pillShape}{pill.pillImprint ? ` · 각인: ${pill.pillImprint}` : ''}{pill.entpName ? ` · ${pill.entpName}` : ''}</p>
+                <p className="text-xs text-slate-500 mt-1 line-clamp-2">{pill.description}</p>
               </div>
               <div className={`text-xs font-bold px-2 py-1 rounded-full shrink-0 ${s.badge}`}>
                 {pill.mfdsFound ? '확인됨' : '미확인'}
@@ -844,7 +891,7 @@ function CameraView({ onCapture, onCancel }) {
 }
 
 // ─── 홈 뷰 ───────────────────────────────────────────────────────────────────
-function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, analyzing, mfdsLoading, onCameraCapture, onGalleryUpload, onChat, onHistory, onRetry, previewUrl, logCount, symptom, onSymptomChange, onLogoTap }) {
+function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, combinedAnalysis, analyzing, mfdsLoading, onCameraCapture, onGalleryUpload, onChat, onHistory, onRetry, previewUrl, logCount, symptom, onSymptomChange, onLogoTap }) {
   const [selectedPillIdx, setSelectedPillIdx] = useState(0)
   const fileInputRef = useRef(null)
   const [step, setStep] = useState(previewUrl || analysisResult ? 2 : 1)
@@ -927,6 +974,35 @@ function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, analy
           </div>
         )}
         {(analyzing || mfdsLoading) && <AnalyzingSkeleton mfdsLoading={mfdsLoading} />}
+        {!analyzing && !mfdsLoading && combinedAnalysis && (
+          <div className={`rounded-2xl p-4 border-2 ${
+            combinedAnalysis.recommendCode === 'safe' ? 'bg-green-50 border-emerald-200' :
+            combinedAnalysis.recommendCode === 'danger' ? 'bg-red-50 border-red-200' :
+            'bg-amber-50 border-amber-200'
+          }`}>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xl">
+                {combinedAnalysis.recommendCode === 'safe' ? '✅' : combinedAnalysis.recommendCode === 'danger' ? '❌' : '⚠️'}
+              </span>
+              <p className={`font-black text-lg ${
+                combinedAnalysis.recommendCode === 'safe' ? 'text-emerald-700' :
+                combinedAnalysis.recommendCode === 'danger' ? 'text-red-700' : 'text-amber-700'
+              }`}>{combinedAnalysis.recommendation}</p>
+            </div>
+            <p className="text-sm text-slate-700 font-medium mb-1">{combinedAnalysis.oneLineSummary}</p>
+            <p className="text-sm text-slate-600 leading-relaxed">{combinedAnalysis.combinedUse}</p>
+            {symptom && (
+              <div className="mt-2 pt-2 border-t border-slate-200 flex items-start gap-2">
+                <span className="text-xs font-bold text-slate-400 shrink-0">증상 비교</span>
+                <span className={`text-xs font-semibold ${
+                  combinedAnalysis.matchScore === '높음' ? 'text-emerald-600' :
+                  combinedAnalysis.matchScore === '낮음' ? 'text-red-500' : 'text-amber-600'
+                }`}>{combinedAnalysis.matchScore}</span>
+                <span className="text-xs text-slate-500">{combinedAnalysis.matchReason}</span>
+              </div>
+            )}
+          </div>
+        )}
         {!analyzing && !mfdsLoading && pillResults.length > 0 && (
           <PillListCard
             pillResults={pillResults}
@@ -990,6 +1066,7 @@ export default function App() {
   const [analysisResult, setAnalysisResult] = useState(null)
   const [mfdsInfo, setMfdsInfo] = useState(null)
   const [pillResults, setPillResults] = useState([])
+  const [combinedAnalysis, setCombinedAnalysis] = useState(null)
   const [analysisLogs, setAnalysisLogs] = useState([])
   const [currentUser, setCurrentUser] = useState(null)
   const [authReady, setAuthReady] = useState(false)
@@ -1102,6 +1179,11 @@ export default function App() {
       )
       setPillResults(results)
       setAnalysisResult(results[0])
+
+      // 종합 분석 (여러 알약 + 증상 비교)
+      const combined = await analyzePillsCombined(results, symptom)
+      setCombinedAnalysis(combined)
+
       if (results[0]?.statusCode !== 'unidentified') {
         await saveToFirestore(results[0])
       }
@@ -1156,10 +1238,10 @@ export default function App() {
     <>
       <HomeView
         userConditions={userConditions} analysisResult={analysisResult} mfdsInfo={mfdsInfo}
-        pillResults={pillResults} analyzing={analyzing} mfdsLoading={mfdsLoading}
+        pillResults={pillResults} combinedAnalysis={combinedAnalysis} analyzing={analyzing} mfdsLoading={mfdsLoading}
         onCameraCapture={() => setView('camera')} onGalleryUpload={handleGalleryUpload}
         onChat={() => setView('chat')} onHistory={() => setView('history')}
-        onRetry={() => { setPreviewUrl(null); setAnalysisResult(null); setMfdsInfo(null); setPillResults([]) }}
+        onRetry={() => { setPreviewUrl(null); setAnalysisResult(null); setMfdsInfo(null); setPillResults([]); setCombinedAnalysis(null) }}
         previewUrl={previewUrl} logCount={analysisLogs.length}
         symptom={symptom} onSymptomChange={setSymptom} onLogoTap={handleLogoTap}
       />
