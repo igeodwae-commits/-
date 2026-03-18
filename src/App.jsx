@@ -105,82 +105,88 @@ async function fetchMfdsInfo(drugName) {
   }
 }
 
-// ─── 식약처 API: 낱알식별 정보 조회 ──────────────────────────────────────────
-async function fetchPillInfo(drugName) {
+// ─── 식약처 API: 낱알식별 - 이름으로 검색 ───────────────────────────────────
+async function fetchPillByName(drugName) {
   if (!MFDS_API_KEY || !drugName) return null
   try {
     const params = new URLSearchParams({
       serviceKey: MFDS_API_KEY,
       itemName: drugName,
       type: 'json',
-      numOfRows: '3',
+      numOfRows: '5',
       pageNo: '1',
     })
     const res = await fetch(`${MFDS_PILL_INFO_URL}?${params}`)
     const data = await res.json()
     const items = data?.body?.items
     if (!items || items.length === 0) return null
-    const item = items[0]
-    return {
-      itemName: item.itemName,
-      entpName: item.entpName,
-      chart: item.chart,         // 약 모양
-      colorClass1: item.colorClass1, // 색상
-      formCodeName: item.formCodeName, // 제형
-      itemImage: item.itemImage, // 이미지 URL
-    }
+    return items[0]
   } catch (e) {
-    console.warn('낱알식별 API 오류:', e.message)
+    console.warn('낱알식별(이름) API 오류:', e.message)
     return null
   }
 }
 
-// ─── AI Vision 프롬프트 ───────────────────────────────────────────────────────
+// ─── 식약처 API: 낱알식별 - 색상/모양/각인으로 검색 (핵심!) ──────────────────
+async function fetchPillByFeature({ color, shape, imprint }) {
+  if (!MFDS_API_KEY) return null
+  try {
+    const params = new URLSearchParams({ serviceKey: MFDS_API_KEY, type: 'json', numOfRows: '5', pageNo: '1' })
+    if (color) params.append('colorClass1', color)
+    if (shape) params.append('chart', shape)
+    if (imprint) params.append('markKorEng', imprint)
+    const res = await fetch(`${MFDS_PILL_INFO_URL}?${params}`)
+    const data = await res.json()
+    const items = data?.body?.items
+    if (!items || items.length === 0) return null
+    return items[0]
+  } catch (e) {
+    console.warn('낱알식별(특징) API 오류:', e.message)
+    return null
+  }
+}
+
+// ─── AI Vision 프롬프트 (특징 추출 전용) ────────────────────────────────────
 const buildVisionPrompt = (userConditions, symptom) => `
-당신은 대한민국 공인 약사입니다.
-사용자의 기저질환: ${userConditions}${symptom ? `\n사용자의 현재 증상: ${symptom}` : ''}
+당신은 이미지 분석 전문가입니다. 약품 이미지에서 아래 정보를 최대한 정확하게 추출하세요.
+사용자 증상: ${symptom || '없음'}
 
-이미지에서 다음을 활용하여 약품을 식별하세요:
-1. 약 포장지/박스의 제품명, 브랜드명 텍스트
-2. 약 봉투에 인쇄된 약품명, 성분명
-3. 알약/캡슐의 색상, 모양, 각인 문자
-4. 포장 디자인 및 색상 조합
+## 추출해야 할 정보
 
-분석 가능한 약품 범위:
-감기약, 해열진통제, 소화제, 항생제, 혈압약, 당뇨약, 피부약, 안약,
-비타민/영양제, 수면제, 항히스타민제, 위장약, 변비약, 근육이완제,
-한약제제, 외용제 등 모든 종류의 의약품
+1. **약품명/텍스트**: 포장지, 약 봉투, 알약 각인에 보이는 모든 한글/영문 텍스트
+2. **알약 색상**: 정확한 색상 (예: 흰색, 노란색, 분홍색, 하늘색, 주황색 등)
+3. **알약 모양**: 원형, 타원형, 장방형, 삼각형, 사각형, 마름모형 등
+4. **각인 문자**: 알약 표면에 새겨진 문자나 숫자 (예: "500", "LOR", "HT" 등)
+5. **제형**: 정제, 캡슐, 시럽, 연고, 파스 등
 
-출력 규칙:
-- summary: 제품명(성분명) 형식. 예: "게보린(이부프로펜+아세트아미노펜)" / "훼스탈골드(소화효소제)" / "베아제(복합소화제)"
-- drugNameForSearch: 식약처 DB 검색용 약품명 (한글 제품명만, 브랜드명 우선. 예: "게보린" / "훼스탈" / "베아제")
-- description: 쉬운 말로. "~로 추정됩니다" 절대 금지.
-- warnings: 구체적으로
-- dosageGuide: "하루 3번, 식후 30분에 1정씩" 처럼 구체적으로
+## 판단 기준
+- 포장지에 약품명이 보이면 반드시 그대로 읽어서 drugNameForSearch에 입력
+- 알약만 보이면 색상/모양/각인을 최대한 정확하게 기술
+- 약 봉투면 봉투에 적힌 약품명 우선
 
-JSON 형식으로만 응답하세요. 마크다운 없이 순수 JSON만:
-
+JSON만 반환 (마크다운 금지):
 {
-  "status": "✅안전 | ⚠️주의 | ❌위험",
+  "drugNameForSearch": "포장지/봉투에서 읽은 정확한 한글 약품명 (없으면 빈 문자열)",
+  "pillColor": "알약 색상 (식약처 기준: 하양, 노랑, 분홍, 빨강, 갈색, 연두, 초록, 청록, 파랑, 남색, 보라, 회색, 검정, 투명)",
+  "pillShape": "알약 모양 (식약처 기준: 원형, 타원형, 장방형, 삼각형, 사각형, 마름모형, 오각형, 육각형, 팔각형, 기타)",
+  "pillImprint": "각인 문자 (없으면 빈 문자열)",
   "statusCode": "safe | caution | danger",
-  "statusText": "한 줄 분류 설명",
-  "oneLineSummary": "비전문가를 위한 한줄 요약",
-  "summary": "의약품 공식 명칭 (성분명 포함)",
-  "drugNameForSearch": "식약처 검색용 약품명 (한글)",
-  "description": "약의 주요 효능 및 작용 기전 (2-3문장)",
+  "statusText": "한줄 분류",
+  "oneLineSummary": "비전문가용 한줄 요약",
+  "summary": "읽은 약품명 또는 특징 기반 추측",
+  "description": "약의 효능 설명 (쉬운 말로)",
   "warnings": "주의사항",
   "dosageGuide": "복용 방법",
-  "interactions": ["병용 주의 약물/음식"],
-  "alternatives": "대체약 또는 보완 방법",
-  "activeIngredients": ["주요 성분명"],
+  "interactions": ["병용 주의"],
+  "alternatives": "대체약",
+  "activeIngredients": ["성분명"],
   "drugType": "전문의약품 | 일반의약품 | 한약제제",
   "confidence": 0.0
 }
 
-약품을 식별할 수 없으면:
-{"status": "❌위험", "statusCode": "unidentified", "summary": "약품 미인식", "description": "이미지에서 약품을 인식할 수 없습니다. 더 가까이서 촬영해주세요.", "confidence": 0}
+약품을 전혀 인식할 수 없으면:
+{"statusCode": "unidentified", "summary": "약품 미인식", "description": "더 가까이서 촬영해주세요.", "confidence": 0, "drugNameForSearch": "", "pillColor": "", "pillShape": "", "pillImprint": ""}
 `
-
 const buildChatSystemPrompt = (analysisResult, mfdsInfo, userConditions) => `
 당신은 '이거돼?' 앱의 AI 약사입니다.
 사용자는 의학 지식이 없는 일반 환자입니다. 쉽고 친근한 말투로 설명하세요.
@@ -925,16 +931,47 @@ export default function App() {
     setAnalysisResult(aiResult)
     setAnalyzing(false)
 
-    // 2단계: 식약처 API 조회 (AI가 약품명 추출한 경우)
-    if (aiResult.statusCode !== 'unidentified' && (aiResult.drugNameForSearch || aiResult.summary)) {
+    // 2단계: 식약처 API 조회 (이름 우선 → 특징 fallback)
+    if (aiResult.statusCode !== 'unidentified') {
       setMfdsLoading(true)
-      const searchName = aiResult.drugNameForSearch || aiResult.summary?.split('(')[0]?.trim()
       try {
-        const [drugInfo, pillInfo] = await Promise.all([
-          fetchMfdsInfo(searchName),
-          fetchPillInfo(searchName),
-        ])
-        if (drugInfo) setMfdsInfo({ ...drugInfo, ...pillInfo })
+        let pillData = null
+        let drugInfo = null
+
+        // 2-1: 약품명으로 검색 (포장지에서 읽은 경우)
+        const searchName = aiResult.drugNameForSearch || aiResult.summary?.split('(')[0]?.trim()
+        if (searchName) {
+          const [di, pi] = await Promise.all([
+            fetchMfdsInfo(searchName),
+            fetchPillByName(searchName),
+          ])
+          drugInfo = di
+          pillData = pi
+        }
+
+        // 2-2: 약품명 검색 실패 시 색상/모양/각인으로 재검색
+        if (!pillData && (aiResult.pillColor || aiResult.pillShape || aiResult.pillImprint)) {
+          pillData = await fetchPillByFeature({
+            color: aiResult.pillColor,
+            shape: aiResult.pillShape,
+            imprint: aiResult.pillImprint,
+          })
+          // 낱알식별로 찾은 경우 약품명으로 다시 개요정보 검색
+          if (pillData && !drugInfo) {
+            drugInfo = await fetchMfdsInfo(pillData.itemName)
+            // AI 결과도 업데이트
+            aiResult = {
+              ...aiResult,
+              summary: pillData.itemName || aiResult.summary,
+              drugNameForSearch: pillData.itemName,
+            }
+            setAnalysisResult(aiResult)
+          }
+        }
+
+        if (drugInfo || pillData) {
+          setMfdsInfo({ ...drugInfo, ...pillData })
+        }
       } catch (e) {
         console.warn('식약처 API 조회 실패:', e.message)
       } finally {
