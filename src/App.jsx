@@ -832,6 +832,13 @@ function OnboardingSlides({ onComplete }) {
   const [current, setCurrent] = useState(0)
   const slides = [
     {
+      emoji: '💊',
+      title: '이거 돼? 입니다',
+      desc: '약 사진 한 장으로 성분, 효능, 주의사항을 바로 확인하세요',
+      tips: ['AI가 알약을 직접 분석해드려요', '식약처 공식 데이터로 정확하게 알려드려요', '처방약도 일반약도 모두 확인 가능해요'],
+      color: '#0192F5',
+    },
+    {
       emoji: '📸',
       title: '약을 찍어주세요',
       desc: '약 봉투 안 알약을 카메라로 찍거나 갤러리에서 사진을 올려주세요',
@@ -883,17 +890,28 @@ function OnboardingSlides({ onComplete }) {
           <p style={{ fontSize: 15, color: '#666', lineHeight: 1.7, whiteSpace: 'pre-line' }}>{s.desc}</p>
         </div>
 
-        {/* 팁 리스트 */}
-        <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {s.tips.map((tip, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, background: `${s.color}08`, borderRadius: 14, padding: '12px 16px', border: `1px solid ${s.color}20` }}>
-              <div style={{ width: 24, height: 24, borderRadius: '50%', background: s.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <span style={{ color: '#fff', fontSize: 12, fontWeight: 700 }}>{i + 1}</span>
+        {/* 첫 슬라이드면 특별 UI, 나머지는 팁 리스트 */}
+        {current === 0 ? (
+          <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {['AI 약품 분석', '식약처 공식 데이터 연동', '처방약 · 일반약 모두 가능'].map((feat, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#F0F7FF', borderRadius: 14, padding: '14px 18px', border: '1px solid #BDE0FF' }}>
+                <span style={{ fontSize: 18 }}>{['🤖', '🏥', '💊'][i]}</span>
+                <span style={{ fontSize: 14, color: '#0192F5', fontWeight: 600 }}>{feat}</span>
               </div>
-              <span style={{ fontSize: 13, color: '#444', lineHeight: 1.5 }}>{tip}</span>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {s.tips.map((tip, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, background: `${s.color}08`, borderRadius: 14, padding: '12px 16px', border: `1px solid ${s.color}20` }}>
+                <div style={{ width: 24, height: 24, borderRadius: '50%', background: s.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <span style={{ color: '#fff', fontSize: 12, fontWeight: 700 }}>{i + 1}</span>
+                </div>
+                <span style={{ fontSize: 13, color: '#444', lineHeight: 1.5 }}>{tip}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* 하단 */}
