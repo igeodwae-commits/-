@@ -35,6 +35,7 @@ const GROQ_BASE = 'https://api.groq.com/openai/v1'
 // 식약처 API 엔드포인트
 const MFDS_DRUG_INFO_URL = 'https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList'
 const MFDS_PILL_INFO_URL = 'https://apis.data.go.kr/1471000/MdcinGrnIdntfcInfoService03/getMdcinGrnIdntfcInfoList03'
+const MFDS_PRMISN_URL   = 'https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq05'
 
 // ─── Firebase 초기화 ──────────────────────────────────────────────────────────
 let app, auth, db
@@ -168,6 +169,46 @@ async function fetchPillByFeature({ color, shape, imprint, form }) {
   }
 }
 
+// ─── 식약처 API: 의약품 제품허가정보 상세 ────────────────────────────────────
+// endpoint: DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq05
+// 처방약 여부(전문/일반), 성분명(INGR_NAME), 허가일(ITEM_PERMIT_DATE) 등 추가 정보 제공
+async function fetchDrugPermission(drugName) {
+  if (!MFDS_API_KEY || !drugName) return null
+  try {
+    const params = new URLSearchParams({
+      serviceKey: MFDS_API_KEY,
+      item_name: drugName,
+      type: 'json',
+      numOfRows: '3',
+      pageNo: '1',
+    })
+    const res = await fetch(`${MFDS_PRMISN_URL}?${params}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    // 응답 구조: body.items[] 또는 body.items.item[]
+    const raw = data?.body?.items
+    if (!raw) return null
+    const items = Array.isArray(raw) ? raw : Array.isArray(raw.item) ? raw.item : [raw.item]
+    if (!items || items.length === 0) return null
+    const it = items[0]
+    return {
+      itemName:       it.ITEM_NAME        || it.itemName        || null, // 품목명
+      entpName:       it.ENTP_NAME        || it.entpName        || null, // 업체명
+      itemPermitDate: it.ITEM_PERMIT_DATE || it.itemPermitDate  || null, // 허가일자
+      ingrName:       it.INGR_NAME        || it.ingrName        || null, // 주성분
+      etcOtcName:     it.ETC_OTC_NAME     || it.etcOtcName      || null, // 전문/일반 구분
+      storageMethod:  it.STORAGE_METHOD   || it.storageMethod   || null, // 저장방법
+      validTerm:      it.VALID_TERM        || it.validTerm       || null, // 유효기간
+      packUnit:       it.PACK_UNIT        || it.packUnit        || null, // 포장단위
+      cancelName:     it.CANCEL_NAME      || it.cancelName      || null, // 취소여부
+      source: '식약처_제품허가',
+    }
+  } catch (e) {
+    console.warn('제품허가 API 오류:', e.message)
+    return null
+  }
+}
+
 // ─── 알약 종합 분석 (여러 알약 + 증상 비교) ─────────────────────────────────
 async function analyzePillsCombined(pillResults, symptom) {
   if (!GROQ_API_KEY || pillResults.length === 0) return null
@@ -219,10 +260,14 @@ async function analyzeSinglePill(pillFeature, symptomHint) {
     form: pillFeature.form,
   })
 
-  // 2단계: 찾은 약품명으로 개요정보 조회
+  // 2단계: 찾은 약품명으로 개요정보 + 제품허가정보 병렬 조회
   let drugInfo = null
+  let permitInfo = null
   if (pillData?.itemName) {
-    drugInfo = await fetchMfdsInfo(pillData.itemName)
+    ;[drugInfo, permitInfo] = await Promise.all([
+      fetchMfdsInfo(pillData.itemName),
+      fetchDrugPermission(pillData.itemName),
+    ])
   }
 
   // 3단계: 결과 종합
@@ -230,10 +275,13 @@ async function analyzeSinglePill(pillFeature, symptomHint) {
     // 식약처 효능 텍스트 요약 (AI로)
     let efcySummary = drugInfo?.efcyQesitm || ''
     let atpnSummary = drugInfo?.atpnQesitm || ''
-    let useSummary = drugInfo?.useMethodQesitm || ''
+    let useSummary  = drugInfo?.useMethodQesitm || ''
     if (efcySummary.length > 100) efcySummary = await summarizeMfdsText('효능', efcySummary)
     if (atpnSummary.length > 100) atpnSummary = await summarizeMfdsText('주의사항', atpnSummary)
-    if (useSummary.length > 80) useSummary = await summarizeMfdsText('복용법', useSummary)
+    if (useSummary.length  > 80)  useSummary  = await summarizeMfdsText('복용법', useSummary)
+
+    // 전문/일반 구분: 제품허가 API 우선, 없으면 개요 API fallback
+    const etcOtc = permitInfo?.etcOtcName || (drugInfo ? '처방약' : '-')
 
     return {
       statusCode: 'caution',
@@ -244,34 +292,44 @@ async function analyzeSinglePill(pillFeature, symptomHint) {
       warnings: atpnSummary || '복용 전 약사에게 확인하세요.',
       dosageGuide: useSummary || '-',
       interactions: drugInfo?.intrcQesitm ? [drugInfo.intrcQesitm.slice(0, 60)] : [],
-      activeIngredients: pillData.itemName ? [pillData.itemName] : [],
-      drugType: drugInfo ? '처방약' : '-',
-      confidence: 0.85,
-      pillColor: pillFeature.color,
-      pillShape: pillFeature.shape,
-      pillImprint: pillFeature.imprint,
-      itemImage: pillData?.itemImage || null,
-      entpName: pillData?.entpName || null,
-      mfdsFound: true,
+      activeIngredients: permitInfo?.ingrName
+        ? [permitInfo.ingrName]
+        : pillData.itemName ? [pillData.itemName] : [],
+      drugType:      etcOtc,                          // 전문의약품 / 일반의약품
+      confidence:    0.85,
+      pillColor:     pillFeature.color,
+      pillShape:     pillFeature.shape,
+      pillImprint:   pillFeature.imprint,
+      itemImage:     pillData?.itemImage    || null,
+      entpName:      permitInfo?.entpName   || pillData?.entpName || null,
+      // ── 제품허가 추가 필드 ──────────────────────────────────────
+      permitDate:    permitInfo?.itemPermitDate || null, // 허가일자
+      storageMethod: permitInfo?.storageMethod  || null, // 저장방법
+      validTerm:     permitInfo?.validTerm      || null, // 유효기간
+      packUnit:      permitInfo?.packUnit       || null, // 포장단위
+      cancelName:    permitInfo?.cancelName     || null, // 취소/취하 여부
+      mfdsFound:     true,
+      permitFound:   !!permitInfo,
     }
   }
 
   // 식약처에서 못 찾은 경우
   return {
-    statusCode: 'caution',
-    statusText: '식약처 DB 미등록',
-    summary: `${pillFeature.color} ${pillFeature.shape} 알약`,
+    statusCode:  'caution',
+    statusText:  '식약처 DB 미등록',
+    summary:     `${pillFeature.color} ${pillFeature.shape} 알약`,
     description: `${pillFeature.color}색 ${pillFeature.shape} 알약이에요. ${pillFeature.imprint ? `각인: ${pillFeature.imprint}` : '각인 없음'}`,
-    warnings: '식약처 DB에서 찾을 수 없어요. 처방한 의사/약사에게 확인하세요.',
+    warnings:    '식약처 DB에서 찾을 수 없어요. 처방한 의사/약사에게 확인하세요.',
     dosageGuide: '-',
     interactions: [],
     activeIngredients: [],
-    drugType: '-',
-    confidence: 0.2,
-    pillColor: pillFeature.color,
-    pillShape: pillFeature.shape,
+    drugType:    '-',
+    confidence:  0.2,
+    pillColor:   pillFeature.color,
+    pillShape:   pillFeature.shape,
     pillImprint: pillFeature.imprint,
-    mfdsFound: false,
+    mfdsFound:   false,
+    permitFound: false,
   }
 }
 
@@ -457,6 +515,17 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
         </div>
       )}
 
+      {/* 제품허가 정보 뱃지 */}
+      {result.permitFound && (
+        <div className="px-5 py-2 bg-purple-50 border-b border-purple-100 flex items-center gap-2">
+          <Shield size={13} className="text-purple-500" />
+          <p className="text-xs text-purple-600 font-semibold">의약품 제품허가 정보 연동됨</p>
+          {result.etcOtcName && (
+            <span className="ml-auto text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full font-semibold">{result.drugType}</span>
+          )}
+        </div>
+      )}
+
       {/* 약품 헤더 */}
       <div className="p-5 space-y-3">
         <div className="flex items-start justify-between gap-2">
@@ -502,6 +571,18 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
               {mfdsInfo.atpnWarnQesitm && <MfdsRow label="경고" value={mfdsInfo.atpnWarnQesitm} highlight />}
               {mfdsInfo.intrcQesitm && <MfdsRow label="상호작용" value={mfdsInfo.intrcQesitm} />}
               {mfdsInfo.depositMethodQesitm && <MfdsRow label="보관법" value={mfdsInfo.depositMethodQesitm} />}
+              {/* 제품허가 추가 정보 */}
+              {result.permitFound && (
+                <>
+                  {result.permitDate    && <MfdsRow label="허가일자"  value={result.permitDate} />}
+                  {result.storageMethod && <MfdsRow label="저장방법"  value={result.storageMethod} />}
+                  {result.validTerm     && <MfdsRow label="유효기간"  value={result.validTerm} />}
+                  {result.packUnit      && <MfdsRow label="포장단위"  value={result.packUnit} />}
+                  {result.cancelName    && result.cancelName !== '정상' && (
+                    <MfdsRow label="허가상태" value={result.cancelName} highlight />
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>

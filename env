@@ -1,0 +1,18 @@
+# ─── 이거돼? 환경변수 설정 ──────────────────────────────────────────────────
+
+# ─── Firebase 설정 ──────────────────────────────────────────────────────────
+VITE_FIREBASE_API_KEY=AIzaSyCTRPYPVGKlyqBfO13PkI3ck6cUANmOOKU
+VITE_FIREBASE_AUTH_DOMAIN=igeodwae-99a43.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=igeodwae-99a43
+VITE_FIREBASE_STORAGE_BUCKET=igeodwae-99a43.firebasestorage.app
+VITE_FIREBASE_MESSAGING_SENDER_ID=673256360546
+VITE_FIREBASE_APP_ID=1:673256360546:web:2bb62dbbff9c2f51729f3b
+
+# ─── 앱 식별자 ──────────────────────────────────────────────────────────────
+VITE_APP_ID=igeordwae-production
+
+# ─── 외부 API ────────────────────────────────────────────────────────────────
+VITE_GROQ_API_KEY=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
+VITE_MFDS_API_KEY=73d5d41569516c5a7259f3928ea2de8af44ded772f2a6cb4d6f5dbe27b0f62cd
+
+
