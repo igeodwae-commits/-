@@ -858,8 +858,8 @@ function AdminView({ logs, onBack }) {
   const trusted = logs.filter(l => (l.confidence || 0) >= 0.8).length
   const untrusted = total - trusted
   const avgConfidence = total > 0 ? Math.round(logs.reduce((sum, l) => sum + (l.confidence || 0), 0) / total * 100) : 0
-  const safeCount = logs.filter(l => l.statusCode === 'safe').length
-  const cautionCount = logs.filter(l => l.statusCode === 'caution').length
+  const safeCount = logs.filter(l => (l.confidence || 0) >= 0.8 && l.statusCode !== 'danger').length
+  const cautionCount = logs.filter(l => (l.confidence || 0) < 0.8 && l.statusCode !== 'danger').length
   const dangerCount = logs.filter(l => l.statusCode === 'danger').length
 
   return (
@@ -1227,7 +1227,7 @@ function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, combi
           </div>
         )}
       </div>
-      {step === 1 && (
+      {step === 2 && (
         <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] px-5 pb-8 pt-4 bg-gradient-to-t from-white via-white to-transparent">
           <div className="flex gap-3">
             <button onClick={() => fileInputRef.current?.click()} className="flex-1 py-4 rounded-2xl bg-slate-100 text-slate-600 font-bold flex items-center justify-center gap-2">
