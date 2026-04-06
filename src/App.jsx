@@ -1081,6 +1081,8 @@ function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, combi
   const [selectedPillIdx, setSelectedPillIdx] = useState(0)
   const fileInputRef = useRef(null)
   const [step, setStep] = useState(previewUrl || analysisResult ? 2 : 1)
+  // previewUrl이 생기거나 analyzing 시작하면 step 2로 강제 전환
+  if ((previewUrl || analyzing || mfdsLoading) && step === 1) setStep(2)
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0]
@@ -1229,14 +1231,24 @@ function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, combi
       </div>
       {step === 2 && (
         <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[480px] px-5 pb-8 pt-4 bg-gradient-to-t from-white via-white to-transparent">
-          <div className="flex gap-3">
-            <button onClick={() => fileInputRef.current?.click()} className="flex-1 py-4 rounded-2xl bg-slate-100 text-slate-600 font-bold flex items-center justify-center gap-2">
-              <ImagePlus size={20} /> 갤러리
+          {(analyzing || mfdsLoading || pillResults.length > 0 || (analysisResult && analysisResult.statusCode === 'unidentified')) ? (
+            <button
+              onClick={() => { onRetry(); setStep(2) }}
+              disabled={analyzing || mfdsLoading}
+              className="w-full py-4 rounded-2xl bg-slate-100 text-slate-600 font-bold flex items-center justify-center gap-2 disabled:opacity-40"
+            >
+              <RefreshCw size={18} /> 다시 촬영하기
             </button>
-            <button onClick={onCameraCapture} className="flex-[2] py-4 rounded-2xl bg-gradient-to-r from-[#0192F5] to-[#40BEFD] text-white font-bold text-base flex items-center justify-center gap-2 shadow-lg shadow-blue-200 active:scale-95 transition-all">
-              <Camera size={22} /> 약 촬영하기
-            </button>
-          </div>
+          ) : (
+            <div className="flex gap-3">
+              <button onClick={() => fileInputRef.current?.click()} className="flex-1 py-4 rounded-2xl bg-slate-100 text-slate-600 font-bold flex items-center justify-center gap-2">
+                <ImagePlus size={20} /> 갤러리
+              </button>
+              <button onClick={onCameraCapture} className="flex-[2] py-4 rounded-2xl bg-gradient-to-r from-[#0192F5] to-[#40BEFD] text-white font-bold text-base flex items-center justify-center gap-2 shadow-lg shadow-blue-200 active:scale-95 transition-all">
+                <Camera size={22} /> 약 촬영하기
+              </button>
+            </div>
+          )}
           <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
         </div>
       )}
