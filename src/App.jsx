@@ -27,15 +27,25 @@ const firebaseConfig = {
 
 const APP_ID = import.meta.env.VITE_APP_ID || 'igeordwae-dev'
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY
-const MFDS_API_KEY = import.meta.env.VITE_MFDS_API_KEY // 식약처 API 키
+const MFDS_API_KEY = import.meta.env.VITE_MFDS_API_KEY
 const GROQ_MODEL = 'llama-3.3-70b-versatile'
 const GROQ_VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct'
 const GROQ_BASE = 'https://api.groq.com/openai/v1'
 
-// 식약처 API 엔드포인트
-const MFDS_DRUG_INFO_URL = 'https://apis.data.go.kr/1471000/DrbEasyDrugInfoService/getDrbEasyDrugList'
-const MFDS_PILL_INFO_URL = 'https://apis.data.go.kr/1471000/MdcinGrnIdntfcInfoService03/getMdcinGrnIdntfcInfoList03'
-const MFDS_PRMISN_URL   = 'https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq05'
+// ─── 식약처 API 엔드포인트 (Vercel 프록시 경유) ───────────────────────────────
+const MFDS_PROXY = '/api/mfds-proxy'
+const MFDS_DRUG_INFO_URL = `${MFDS_PROXY}?endpoint=drugInfo`
+const MFDS_PILL_INFO_URL = `${MFDS_PROXY}?endpoint=pillInfo`
+const MFDS_PRMISN_URL   = `${MFDS_PROXY}?endpoint=permission`
+
+// ─── DUR API 엔드포인트 ───────────────────────────────────────────────────────
+const DUR_BASE = 'https://apis.data.go.kr/1471000/DURPrdlstInfoService03'
+const DUR_ENDPOINTS = {
+  병용금기:   `${DUR_BASE}/getUsjntTabooInfoList03`,
+  임부금기:   `${DUR_BASE}/getPwnmTabooInfoList03`,
+  노인주의:   `${DUR_BASE}/getOdsnAtentInfoList03`,
+  효능군중복: `${DUR_BASE}/getEfcyDplctInfoList03`,
+}
 
 // ─── Firebase 초기화 ──────────────────────────────────────────────────────────
 let app, auth, db
@@ -80,9 +90,7 @@ async function summarizeMfdsText(label, text) {
       model: GROQ_MODEL,
       messages: [{
         role: 'user',
-        content: `다음 의약품 "${label}" 내용을 환자가 이해하기 쉽게 2문장 이내로 요약해주세요. 핵심만 간결하게:
-
-${text}`
+        content: `다음 의약품 "${label}" 내용을 환자가 이해하기 쉽게 2문장 이내로 요약해주세요. 핵심만 간결하게:\n\n${text}`
       }],
       temperature: 0.3,
       max_tokens: 150,
@@ -95,16 +103,10 @@ ${text}`
 
 // ─── 식약처 API: 의약품 개요정보 조회 ────────────────────────────────────────
 async function fetchMfdsInfo(drugName) {
-  if (!MFDS_API_KEY || !drugName) return null
+  if (!drugName) return null
   try {
-    const params = new URLSearchParams({
-      serviceKey: MFDS_API_KEY,
-      itemName: drugName,
-      type: 'json',
-      numOfRows: '3',
-      pageNo: '1',
-    })
-    const res = await fetch(`${MFDS_DRUG_INFO_URL}?${params}`)
+    const params = new URLSearchParams({ itemName: drugName, numOfRows: '3', pageNo: '1' })
+    const res = await fetch(`${MFDS_DRUG_INFO_URL}&${params}`)
     const data = await res.json()
     const items = data?.body?.items
     if (!items || items.length === 0) return null
@@ -112,13 +114,13 @@ async function fetchMfdsInfo(drugName) {
     return {
       itemName: item.itemName,
       entpName: item.entpName,
-      efcyQesitm: item.efcyQesitm,       // 효능
-      useMethodQesitm: item.useMethodQesitm, // 복용법
-      atpnWarnQesitm: item.atpnWarnQesitm,   // 주의사항 경고
-      atpnQesitm: item.atpnQesitm,           // 주의사항
-      intrcQesitm: item.intrcQesitm,         // 상호작용
-      seQesitm: item.seQesitm,               // 부작용
-      depositMethodQesitm: item.depositMethodQesitm, // 보관법
+      efcyQesitm: item.efcyQesitm,
+      useMethodQesitm: item.useMethodQesitm,
+      atpnWarnQesitm: item.atpnWarnQesitm,
+      atpnQesitm: item.atpnQesitm,
+      intrcQesitm: item.intrcQesitm,
+      seQesitm: item.seQesitm,
+      depositMethodQesitm: item.depositMethodQesitm,
       source: '식품의약품안전처',
     }
   } catch (e) {
@@ -129,16 +131,10 @@ async function fetchMfdsInfo(drugName) {
 
 // ─── 식약처 API: 낱알식별 - 이름으로 검색 ───────────────────────────────────
 async function fetchPillByName(drugName) {
-  if (!MFDS_API_KEY || !drugName) return null
+  if (!drugName) return null
   try {
-    const params = new URLSearchParams({
-      serviceKey: MFDS_API_KEY,
-      itemName: drugName,
-      type: 'json',
-      numOfRows: '5',
-      pageNo: '1',
-    })
-    const res = await fetch(`${MFDS_PILL_INFO_URL}?${params}`)
+    const params = new URLSearchParams({ itemName: drugName, numOfRows: '5', pageNo: '1' })
+    const res = await fetch(`${MFDS_PILL_INFO_URL}&${params}`)
     const data = await res.json()
     const items = data?.body?.items
     if (!items || items.length === 0) return null
@@ -151,14 +147,13 @@ async function fetchPillByName(drugName) {
 
 // ─── 식약처 API: 낱알식별 - 색상/모양/각인으로 검색 ────────────────────────
 async function fetchPillByFeature({ color, shape, imprint, form }) {
-  if (!MFDS_API_KEY) return null
   try {
-    const params = new URLSearchParams({ serviceKey: MFDS_API_KEY, type: 'json', numOfRows: '3', pageNo: '1' })
+    const params = new URLSearchParams({ numOfRows: '3', pageNo: '1' })
     if (color) params.append('colorClass1', color)
     if (shape) params.append('chart', shape)
     if (imprint) params.append('markKorEng', imprint)
     if (form) params.append('formCodeName', form)
-    const res = await fetch(`${MFDS_PILL_INFO_URL}?${params}`)
+    const res = await fetch(`${MFDS_PILL_INFO_URL}&${params}`)
     const data = await res.json()
     const items = data?.body?.items
     if (!items || items.length === 0) return null
@@ -170,37 +165,28 @@ async function fetchPillByFeature({ color, shape, imprint, form }) {
 }
 
 // ─── 식약처 API: 의약품 제품허가정보 상세 ────────────────────────────────────
-// endpoint: DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq05
-// 처방약 여부(전문/일반), 성분명(INGR_NAME), 허가일(ITEM_PERMIT_DATE) 등 추가 정보 제공
 async function fetchDrugPermission(drugName) {
-  if (!MFDS_API_KEY || !drugName) return null
+  if (!drugName) return null
   try {
-    const params = new URLSearchParams({
-      serviceKey: MFDS_API_KEY,
-      item_name: drugName,
-      type: 'json',
-      numOfRows: '3',
-      pageNo: '1',
-    })
-    const res = await fetch(`${MFDS_PRMISN_URL}?${params}`)
+    const params = new URLSearchParams({ item_name: drugName, numOfRows: '3', pageNo: '1' })
+    const res = await fetch(`${MFDS_PRMISN_URL}&${params}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    // 응답 구조: body.items[] 또는 body.items.item[]
     const raw = data?.body?.items
     if (!raw) return null
     const items = Array.isArray(raw) ? raw : Array.isArray(raw.item) ? raw.item : [raw.item]
     if (!items || items.length === 0) return null
     const it = items[0]
     return {
-      itemName:       it.ITEM_NAME        || it.itemName        || null, // 품목명
-      entpName:       it.ENTP_NAME        || it.entpName        || null, // 업체명
-      itemPermitDate: it.ITEM_PERMIT_DATE || it.itemPermitDate  || null, // 허가일자
-      ingrName:       it.INGR_NAME        || it.ingrName        || null, // 주성분
-      etcOtcName:     it.ETC_OTC_NAME     || it.etcOtcName      || null, // 전문/일반 구분
-      storageMethod:  it.STORAGE_METHOD   || it.storageMethod   || null, // 저장방법
-      validTerm:      it.VALID_TERM        || it.validTerm       || null, // 유효기간
-      packUnit:       it.PACK_UNIT        || it.packUnit        || null, // 포장단위
-      cancelName:     it.CANCEL_NAME      || it.cancelName      || null, // 취소여부
+      itemName:       it.ITEM_NAME        || it.itemName        || null,
+      entpName:       it.ENTP_NAME        || it.entpName        || null,
+      itemPermitDate: it.ITEM_PERMIT_DATE || it.itemPermitDate  || null,
+      ingrName:       it.INGR_NAME        || it.ingrName        || null,
+      etcOtcName:     it.ETC_OTC_NAME     || it.etcOtcName      || null,
+      storageMethod:  it.STORAGE_METHOD   || it.storageMethod   || null,
+      validTerm:      it.VALID_TERM       || it.validTerm       || null,
+      packUnit:       it.PACK_UNIT        || it.packUnit        || null,
+      cancelName:     it.CANCEL_NAME      || it.cancelName      || null,
       source: '식약처_제품허가',
     }
   } catch (e) {
@@ -209,14 +195,128 @@ async function fetchDrugPermission(drugName) {
   }
 }
 
-// ─── 알약 종합 분석 (여러 알약 + 증상 비교) ─────────────────────────────────
+// ─── DUR API 헬퍼 ────────────────────────────────────────────────────────────
+async function fetchDurApi(endpoint, drugName) {
+  if (!MFDS_API_KEY || !drugName) return []
+  try {
+    const params = new URLSearchParams({
+      serviceKey: MFDS_API_KEY,
+      itemName: drugName,
+      type: 'json',
+      numOfRows: '5',
+      pageNo: '1',
+    })
+    const res = await fetch(`${endpoint}?${params}`)
+    if (!res.ok) return []
+    const data = await res.json()
+    const raw = data?.body?.items
+    if (!raw) return []
+    return Array.isArray(raw) ? raw : Array.isArray(raw.item) ? raw.item : raw.item ? [raw.item] : []
+  } catch (e) {
+    console.warn('DUR API 오류:', e.message)
+    return []
+  }
+}
+
+async function checkDurCombination(drugNames) {
+  if (!drugNames || drugNames.length < 2) return []
+  const warnings = []
+  for (let i = 0; i < drugNames.length; i++) {
+    for (let j = i + 1; j < drugNames.length; j++) {
+      const drugA = drugNames[i], drugB = drugNames[j]
+      const items = await fetchDurApi(DUR_ENDPOINTS.병용금기, drugA)
+      const matched = items.filter(item => {
+        const prohibitName = item.PROHBT_CONTENT || item.prohibtContent || item.MIXTURE_ITEM_NAME || ''
+        return prohibitName.includes(drugB) || drugB.includes(prohibitName.slice(0, 4))
+      })
+      if (matched.length > 0) {
+        warnings.push({
+          type: '병용금기', level: 'danger', drugs: [drugA, drugB],
+          reason: matched[0].PROHBT_CONTENT || matched[0].prohibtContent || `${drugA}와 ${drugB}는 함께 복용하면 안 돼요.`,
+          note: matched[0].REMARK || matched[0].remark || '',
+        })
+      }
+    }
+  }
+  return warnings
+}
+
+async function checkDurPregnancy(drugNames) {
+  const warnings = []
+  for (const name of drugNames) {
+    const items = await fetchDurApi(DUR_ENDPOINTS.임부금기, name)
+    if (items.length > 0) {
+      const item = items[0]
+      warnings.push({
+        type: '임부금기', level: 'danger', drugs: [name],
+        reason: item.PROHBT_CONTENT || item.prohibtContent || `${name}은(는) 임산부가 복용하면 안 돼요.`,
+        grade: item.PROHBT_GRADE || item.prohibtGrade || '',
+        note: item.REMARK || item.remark || '',
+      })
+    }
+  }
+  return warnings
+}
+
+async function checkDurElderly(drugNames) {
+  const warnings = []
+  for (const name of drugNames) {
+    const items = await fetchDurApi(DUR_ENDPOINTS.노인주의, name)
+    if (items.length > 0) {
+      const item = items[0]
+      warnings.push({
+        type: '노인주의', level: 'caution', drugs: [name],
+        reason: item.ATENT_CONTENT || item.atentContent || `${name}은(는) 노인이 복용 시 주의가 필요해요.`,
+        note: item.REMARK || item.remark || '',
+      })
+    }
+  }
+  return warnings
+}
+
+async function checkDurDuplicate(drugNames) {
+  if (!drugNames || drugNames.length < 2) return []
+  const warnings = []
+  const efcyGroups = {}
+  for (const name of drugNames) {
+    const items = await fetchDurApi(DUR_ENDPOINTS.효능군중복, name)
+    if (items.length > 0) {
+      const code = items[0].EFCY_GROUP_NO || items[0].efcyGroupNo || null
+      const groupName = items[0].EFCY_GROUP_NAME || items[0].efcyGroupName || null
+      if (code) {
+        if (!efcyGroups[code]) efcyGroups[code] = { groupName, drugs: [] }
+        efcyGroups[code].drugs.push(name)
+      }
+    }
+  }
+  for (const [code, group] of Object.entries(efcyGroups)) {
+    if (group.drugs.length >= 2) {
+      warnings.push({
+        type: '효능군중복', level: 'caution', drugs: group.drugs,
+        reason: `${group.groupName || '동일 효능군'} 계열 약이 ${group.drugs.length}개예요. 중복 복용 주의!`,
+        note: `효능군 코드: ${code}`,
+      })
+    }
+  }
+  return warnings
+}
+
+async function runDurCheck(pillResults, userProfile = {}) {
+  const drugNames = pillResults.map(p => p.drugNameForSearch || p.summary).filter(Boolean)
+  if (drugNames.length === 0) return []
+  const checks = [checkDurCombination(drugNames)]
+  if (userProfile.isPregnant) checks.push(checkDurPregnancy(drugNames))
+  if (userProfile.isElderly)  checks.push(checkDurElderly(drugNames))
+  if (drugNames.length >= 2)  checks.push(checkDurDuplicate(drugNames))
+  const results = await Promise.all(checks)
+  return results.flat()
+}
+
+// ─── 알약 종합 분석 ───────────────────────────────────────────────────────────
 async function analyzePillsCombined(pillResults, symptom) {
   if (!GROQ_API_KEY || pillResults.length === 0) return null
   try {
-    const pillSummary = pillResults
-      .map((p, i) => `${i+1}. ${p.summary} - ${p.description}`)
-      .join('\n')
-
+    const pillSummary = pillResults.map((p, i) => `${i+1}. ${p.summary} - ${p.description}`).join('\n')
     const data = await safeFetchGroq({
       model: GROQ_MODEL,
       messages: [{
@@ -224,20 +324,7 @@ async function analyzePillsCombined(pillResults, symptom) {
         content: '당신은 친절한 AI 약사입니다. 쉽고 짧게 설명하세요. 전문용어 금지.'
       }, {
         role: 'user',
-        content: `다음 약들을 분석해주세요:
-${pillSummary}
-
-사용자 증상: ${symptom || '없음'}
-
-아래 JSON만 반환하세요 (마크다운 금지):
-{
-  "combinedUse": "이 약들을 함께 먹는 이유 1-2문장 (쉬운 말로)",
-  "matchScore": "증상과 일치도 (높음/보통/낮음/알수없음)",
-  "matchReason": "증상과 맞는지 이유 1문장",
-  "recommendation": "추천합니다 | 주의가 필요해요 | 확인이 필요해요",
-  "recommendCode": "safe | caution | danger",
-  "oneLineSummary": "20자 이내 핵심 한줄 요약"
-}`
+        content: `다음 약들을 분석해주세요:\n${pillSummary}\n\n사용자 증상: ${symptom || '없음'}\n\n아래 JSON만 반환하세요 (마크다운 금지):\n{\n  "combinedUse": "이 약들을 함께 먹는 이유 1-2문장 (쉬운 말로)",\n  "matchScore": "증상과 일치도 (높음/보통/낮음/알수없음)",\n  "matchReason": "증상과 맞는지 이유 1문장",\n  "recommendation": "추천합니다 | 주의가 필요해요 | 확인이 필요해요",\n  "recommendCode": "safe | caution | danger",\n  "oneLineSummary": "20자 이내 핵심 한줄 요약"\n}`
       }],
       temperature: 0.3,
       max_tokens: 300,
@@ -250,17 +337,34 @@ ${pillSummary}
   }
 }
 
-// ─── 알약 1개 전체 분석 (낱알식별 → 의약품개요 → 종합) ──────────────────────
+// ─── 알약 1개 전체 분석 ───────────────────────────────────────────────────────
 async function analyzeSinglePill(pillFeature, symptomHint) {
-  // 1단계: 식약처 낱알식별로 약품 찾기
-  const pillData = await fetchPillByFeature({
-    color: pillFeature.color,
-    shape: pillFeature.shape,
-    imprint: pillFeature.imprint,
-    form: pillFeature.form,
-  })
+  let pillData = null
 
-  // 2단계: 찾은 약품명으로 개요정보 + 제품허가정보 병렬 조회
+  // 1단계: Vision이 약 이름 읽었으면 이름으로 먼저 검색
+  if (pillFeature.drugName && pillFeature.drugName.trim().length > 0) {
+    pillData = await fetchPillByName(pillFeature.drugName.trim())
+    if (!pillData && pillFeature.imprint && pillFeature.imprint.trim().length > 0) {
+      pillData = await fetchPillByName(pillFeature.imprint.trim())
+    }
+  }
+
+  // 2단계: 각인 단독 검색
+  if (!pillData && pillFeature.imprint && pillFeature.imprint.trim().length > 0) {
+    pillData = await fetchPillByName(pillFeature.imprint.trim())
+  }
+
+  // 3단계: 색상/모양으로 fallback
+  if (!pillData) {
+    pillData = await fetchPillByFeature({
+      color: pillFeature.color,
+      shape: pillFeature.shape,
+      imprint: pillFeature.imprint,
+      form: pillFeature.form,
+    })
+  }
+
+  // 4단계: 약품명으로 개요 + 제품허가 병렬 조회
   let drugInfo = null
   let permitInfo = null
   if (pillData?.itemName) {
@@ -270,54 +374,45 @@ async function analyzeSinglePill(pillFeature, symptomHint) {
     ])
   }
 
-  // 3단계: 결과 종합
   if (pillData) {
-    // 식약처 효능 텍스트 요약 (AI로)
     let efcySummary = drugInfo?.efcyQesitm || ''
     let atpnSummary = drugInfo?.atpnQesitm || ''
     let useSummary  = drugInfo?.useMethodQesitm || ''
     if (efcySummary.length > 100) efcySummary = await summarizeMfdsText('효능', efcySummary)
     if (atpnSummary.length > 100) atpnSummary = await summarizeMfdsText('주의사항', atpnSummary)
     if (useSummary.length  > 80)  useSummary  = await summarizeMfdsText('복용법', useSummary)
-
-    // 전문/일반 구분: 제품허가 API 우선, 없으면 개요 API fallback
     const etcOtc = permitInfo?.etcOtcName || (drugInfo ? '처방약' : '-')
-
     return {
       statusCode: 'caution',
       statusText: '복용 전 확인하세요',
-      summary: pillData.itemName || `${pillFeature.color} ${pillFeature.shape} 알약`,
+      summary: pillData.itemName || pillFeature.drugName || `${pillFeature.color} ${pillFeature.shape} 알약`,
       drugNameForSearch: pillData.itemName,
       description: efcySummary || `${pillFeature.color}색 ${pillFeature.shape} 알약이에요.`,
       warnings: atpnSummary || '복용 전 약사에게 확인하세요.',
       dosageGuide: useSummary || '-',
       interactions: drugInfo?.intrcQesitm ? [drugInfo.intrcQesitm.slice(0, 60)] : [],
-      activeIngredients: permitInfo?.ingrName
-        ? [permitInfo.ingrName]
-        : pillData.itemName ? [pillData.itemName] : [],
-      drugType:      etcOtc,                          // 전문의약품 / 일반의약품
-      confidence:    0.85,
+      activeIngredients: permitInfo?.ingrName ? [permitInfo.ingrName] : pillData.itemName ? [pillData.itemName] : [],
+      drugType:      etcOtc,
+      confidence:    0.9,
       pillColor:     pillFeature.color,
       pillShape:     pillFeature.shape,
       pillImprint:   pillFeature.imprint,
       itemImage:     pillData?.itemImage    || null,
       entpName:      permitInfo?.entpName   || pillData?.entpName || null,
-      // ── 제품허가 추가 필드 ──────────────────────────────────────
-      permitDate:    permitInfo?.itemPermitDate || null, // 허가일자
-      storageMethod: permitInfo?.storageMethod  || null, // 저장방법
-      validTerm:     permitInfo?.validTerm      || null, // 유효기간
-      packUnit:      permitInfo?.packUnit       || null, // 포장단위
-      cancelName:    permitInfo?.cancelName     || null, // 취소/취하 여부
+      permitDate:    permitInfo?.itemPermitDate || null,
+      storageMethod: permitInfo?.storageMethod  || null,
+      validTerm:     permitInfo?.validTerm      || null,
+      packUnit:      permitInfo?.packUnit       || null,
+      cancelName:    permitInfo?.cancelName     || null,
       mfdsFound:     true,
       permitFound:   !!permitInfo,
     }
   }
 
-  // 식약처에서 못 찾은 경우
   return {
     statusCode:  'caution',
     statusText:  '식약처 DB 미등록',
-    summary:     `${pillFeature.color} ${pillFeature.shape} 알약`,
+    summary:     pillFeature.drugName || `${pillFeature.color} ${pillFeature.shape} 알약`,
     description: `${pillFeature.color}색 ${pillFeature.shape} 알약이에요. ${pillFeature.imprint ? `각인: ${pillFeature.imprint}` : '각인 없음'}`,
     warnings:    '식약처 DB에서 찾을 수 없어요. 처방한 의사/약사에게 확인하세요.',
     dosageGuide: '-',
@@ -333,64 +428,122 @@ async function analyzeSinglePill(pillFeature, symptomHint) {
   }
 }
 
-// ─── AI Vision 프롬프트 ─────────────────────────────────────────────────────
+// ─── AI Vision 프롬프트 ───────────────────────────────────────────────────────
 const buildVisionPrompt = (userConditions, symptom) => `
-당신은 약학 전문가입니다. 이미지 속 알약들을 하나씩 분석하세요.
-사용자 증상: ${symptom || '없음'} / 기저질환: ${userConditions}
+당신은 약학 전문가 + 이미지 분석 전문가입니다. 이미지 속 알약을 정밀 분석하세요.
 
-## 핵심 임무
-봉투/포장 안에 있는 알약 하나하나의 외형 특징을 정확히 추출하세요.
-봉투 텍스트가 아닌 알약 자체의 색상, 모양, 크기, 각인을 집중해서 보세요.
+## 분석 순서 (반드시 이 순서대로)
 
-## 색상 분류 (식약처 기준)
+### STEP 1. 각인/표면 텍스트 읽기
+알약 표면의 숫자, 영문, 한글을 정확히 읽으세요.
+예시: TYLENOL, 500, ER, TL, 게보린, 펜잘 등
+
+### STEP 2. 외형 특징 추출
+색상, 모양, 제형, 크기를 아래 식약처 기준 단어로 추출하세요.
+(색상/모양은 반드시 아래 허용 단어만 사용)
+
+## 색상 (이 단어만 허용)
 하양, 노랑, 주황, 분홍, 빨강, 갈색, 연두, 초록, 청록, 파랑, 남색, 보라, 회색, 검정, 투명
 
-## 모양 분류 (식약처 기준)
+## 모양 (이 단어만 허용)
 원형, 타원형, 장방형, 삼각형, 사각형, 마름모형, 오각형, 육각형, 팔각형, 기타
 
-## 제형 분류
+## 제형
 정제, 경질캡슐, 연질캡슐, 필름코팅정
 
-JSON만 반환 (마크다운 금지):
+### STEP 3. 약 이름 종합 추론 (핵심!)
+STEP1 + STEP2에서 수집한 모든 정보를 종합해서 이 알약이 어떤 약인지 추론하세요.
+
+종합 근거:
+- STEP1 각인 텍스트
+- STEP2 색상 + 모양 + 제형 + 크기 조합
+- 사용자 증상: ${symptom || '없음'}
+- 기저질환: ${userConditions || '없음'}
+
+추론 예시:
+- 각인 "TYLENOL 500" + 하양 원형 → drugName: "타이레놀"
+- 각인 "500" + 하양 원형 + 증상 두통 → drugName: "타이레놀500mg 추정"
+- 각인 없음 + 분홍 타원형 + 증상 소화불량 → drugName: "소화제 계열 추정"
+- 각인 없음 + 추론 불가 → drugName: ""
+
+JSON만 반환 (마크다운/설명 절대 금지):
 {
   "pills": [
     {
-      "color": "색상 (식약처 기준)",
-      "shape": "모양 (식약처 기준)",
+      "drugName": "STEP3에서 추론한 약 이름 (예: 타이레놀, 게보린, 소화제 계열 추정 / 추론 불가면 빈 문자열)",
+      "color": "색상 (식약처 기준 단어만)",
+      "shape": "모양 (식약처 기준 단어만)",
       "form": "제형",
-      "imprint": "각인 문자 (없으면 빈 문자열)",
+      "imprint": "각인 문자 전체 (없으면 빈 문자열)",
       "size": "크기 (소/중/대)",
-      "description": "이 알약의 외형 설명 1문장"
+      "description": "외형 + 추론 근거 1문장 (예: 하양 원형 정제, 각인 TYLENOL 500으로 타이레놀로 추정)"
     }
   ],
   "totalCount": 알약_개수,
-  "symptomHint": "증상 기반 예상 약품 종류 (예: 소화제, 항생제 등)"
+  "symptomHint": "증상 기반 예상 약품 종류 (예: 해열진통제, 소화제)"
 }
 
-알약이 전혀 안 보이면:
-{"pills": [], "totalCount": 0, "symptomHint": ""}
+알약이 안 보이면: {"pills": [], "totalCount": 0, "symptomHint": ""}
 `
-const buildChatSystemPrompt = (analysisResult, mfdsInfo, userConditions) => `
-당신은 '이거돼?' 앱의 AI 약사입니다.
-사용자는 의학 지식이 없는 일반 환자입니다. 쉽고 친근한 말투로 설명하세요.
 
-답변 규칙:
-1. 약품명/성분명을 먼저 말하고 설명하세요
-2. 전문 용어는 쉬운 말로 풀어서 설명하세요
-3. 답변은 3-4문장으로 짧고 명확하게
-4. 불확실하면 "약사나 의사에게 꼭 확인해보세요"라고 안내
+// ─── 채팅 시스템 프롬프트 (신뢰도 3케이스) ───────────────────────────────────
+const buildChatSystemPrompt = (analysisResult, mfdsInfo, userConditions) => {
+  const pct = Math.round((analysisResult?.confidence || 0) * 100)
+  const drugName = analysisResult?.summary || '미분석'
 
-현재 분석된 약품 정보 (AI 분석):
-- 약품명: ${analysisResult?.summary || '미분석'}
-- 안전도: ${analysisResult?.status || '-'}
-- 사용자 기저질환: ${userConditions}
+  const highConfidencePrompt = `
+당신은 식약처 공공 데이터를 기반으로 의약품 정보를 매칭해주는 '의약품 정보 분석 전문가'입니다.
+모든 판단의 근거는 식약처 공식 허가 데이터에 기반합니다.
 
-${mfdsInfo ? `식품의약품안전처 공식 정보:
-- 효능: ${mfdsInfo.efcyQesitm || '-'}
-- 복용법: ${mfdsInfo.useMethodQesitm || '-'}
-- 주의사항: ${mfdsInfo.atpnQesitm || '-'}
-- 부작용: ${mfdsInfo.seQesitm || '-'}` : ''}
+[응답 원칙]
+1. "약사 상담 필요" 같은 유보적 표현을 쓰지 않습니다. 식약처에 등록된 정확한 용도와 효능을 즉시 답변합니다.
+2. 사용자가 "이 약이 [질환명] 약이 맞나요?" 라고 물으면 "식약처 허가 기준: [질환명] 치료 및 완화용"이라고 명확히 답합니다.
+3. 성분을 나열할 때 각 성분이 신체에서 어떤 작용(예: 기침 억제, 염증 완화)을 하는지 구체적으로 설명합니다.
+4. 답변은 아래 템플릿 구조로 출력합니다:
+
+[식약처 데이터 분석 결과]
+의약품 명칭: {약 이름}
+공식 허가 용도: 식약처에 '{효능군} 증상 완화' 효능으로 등록된 의약품입니다.
+주요 작용:
+  • [성분 A]: [신체 작용 설명]
+  • [성분 B]: [신체 작용 설명]
+현재 상태: 해당 증상에 대한 식약처의 공식적인 사용 승인 정보와 일치합니다.
+
+현재 분석된 약품: ${drugName}
+사용자 기저질환: ${userConditions || '없음'}
+${mfdsInfo ? `\n식품의약품안전처 공식 정보:\n- 효능: ${mfdsInfo.efcyQesitm || '-'}\n- 복용법: ${mfdsInfo.useMethodQesitm || '-'}\n- 주의사항: ${mfdsInfo.atpnQesitm || '-'}\n- 부작용: ${mfdsInfo.seQesitm || '-'}` : ''}
 `
+
+  const midConfidencePrompt = `
+당신은 식약처 공공 데이터를 기반으로 의약품 정보를 매칭해주는 '의약품 정보 분석 전문가'입니다.
+현재 분석 일치율은 ${pct}%로 중간 수준입니다.
+
+[응답 원칙]
+1. 모든 답변에 "식약처 데이터베이스와 ${pct}% 일치하는 의약품 정보"임을 명시합니다.
+2. 정보를 제공할 때 "데이터 매칭 결과"임을 강조하여 최종 판단은 사용자에게 있음을 안내합니다.
+3. 답변 말미에 항상 아래 주의 문구를 포함합니다:
+   "[주의] 분석 일치율이 80% 미만인 경우, 사진 상태에 따라 정보 왜곡이 발생할 수 있습니다. 본 앱은 데이터 대조 결과만을 제공하며, 최종 복용 결정에 따른 책임은 전적으로 사용자에게 있습니다. 실제 약품 외형을 반드시 대조한 후 복용하십시오."
+
+현재 분석된 약품: ${drugName} (일치율 ${pct}%)
+사용자 기저질환: ${userConditions || '없음'}
+${mfdsInfo ? `\n식품의약품안전처 공식 정보:\n- 효능: ${mfdsInfo.efcyQesitm || '-'}\n- 복용법: ${mfdsInfo.useMethodQesitm || '-'}\n- 주의사항: ${mfdsInfo.atpnQesitm || '-'}` : ''}
+`
+
+  const lowConfidencePrompt = `
+당신은 식약처 공공 데이터를 기반으로 의약품 정보를 매칭해주는 '의약품 정보 분석 전문가'입니다.
+현재 분석 일치율은 ${pct}%로 안전한 정보 제공이 어렵습니다.
+
+[응답 원칙]
+1. 약품 정보를 직접 제공하지 않습니다.
+2. 모든 질문에 대해 아래와 같이 안내합니다:
+   "현재 데이터 일치율이 현저히 낮아(${pct}%), 잘못된 정보 제공으로 인한 약물 오남용 위험이 감지되었습니다. 사용자의 안전을 최우선으로 하여 분석 결과를 제공하지 않습니다."
+3. 대신 아하 게시판 약사 상담을 권유합니다: https://www.a-ha.io/topic/%EC%95%BD%EC%98%81%EC%96%91%EC%A0%9C/%EC%95%BD%EB%B3%B5%EC%9A%A9?order=answerRegistration
+`
+
+  if (pct >= 80) return highConfidencePrompt
+  if (pct >= 50) return midConfidencePrompt
+  return lowConfidencePrompt
+}
 
 // ─── 상태 매핑 ────────────────────────────────────────────────────────────────
 const STATUS_MAP = {
@@ -400,7 +553,38 @@ const STATUS_MAP = {
   unidentified: { icon: XCircle, bg: 'bg-slate-50', border: 'border-slate-200', text: 'text-slate-600', badge: 'bg-slate-100 text-slate-700', label: '인식 불가' },
 }
 
-// ─── 결과 카드 ────────────────────────────────────────────────────────────────
+// ─── DUR 경고 카드 ────────────────────────────────────────────────────────────
+function DurWarningCard({ warnings }) {
+  if (!warnings || warnings.length === 0) return null
+  const TYPE_STYLE = {
+    병용금기:   { bg: 'bg-red-50',    border: 'border-red-200',    badge: 'bg-red-100 text-red-700',    icon: '🚫' },
+    임부금기:   { bg: 'bg-pink-50',   border: 'border-pink-200',   badge: 'bg-pink-100 text-pink-700',  icon: '🤰' },
+    노인주의:   { bg: 'bg-amber-50',  border: 'border-amber-200',  badge: 'bg-amber-100 text-amber-700',icon: '👴' },
+    효능군중복: { bg: 'bg-orange-50', border: 'border-orange-200', badge: 'bg-orange-100 text-orange-700', icon: '⚠️' },
+  }
+  return (
+    <div className="space-y-3 animate-slide-up">
+      <p className="text-xs font-bold text-red-400 uppercase tracking-wide px-1 flex items-center gap-1">
+        <span>🛡️</span> DUR 안전성 경고 {warnings.length}건
+      </p>
+      {warnings.map((w, i) => {
+        const s = TYPE_STYLE[w.type] || TYPE_STYLE['효능군중복']
+        return (
+          <div key={i} className={`rounded-2xl border-2 ${s.border} ${s.bg} p-4 space-y-2`}>
+            <div className="flex items-center gap-2">
+              <span className="text-lg">{s.icon}</span>
+              <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${s.badge}`}>{w.type}</span>
+              <span className="text-xs text-slate-500">{w.drugs.join(' + ')}</span>
+            </div>
+            <p className="text-sm font-semibold text-slate-800">{w.reason}</p>
+            {w.note ? <p className="text-xs text-slate-400">{w.note}</p> : null}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ─── 알약 리스트 카드 ─────────────────────────────────────────────────────────
 function PillListCard({ pillResults, onSelectPill, selectedIdx }) {
   if (!pillResults || pillResults.length === 0) return null
@@ -493,20 +677,17 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
 
   return (
     <div className={`rounded-3xl border-2 ${s.border} ${s.bg} overflow-hidden animate-slide-up`}>
-      {/* 추천 배너 */}
       <div className={`${rec.bg} px-5 py-4 flex items-center justify-center gap-2`}>
         <span className="text-2xl">{rec.emoji}</span>
         <p className="text-white font-black text-2xl tracking-tight">{rec.text}</p>
       </div>
 
-      {/* 한줄 요약 */}
       {result.oneLineSummary && (
         <div className="px-5 py-3 bg-white border-b border-slate-100">
           <p className="text-slate-700 font-semibold text-sm text-center">{result.oneLineSummary}</p>
         </div>
       )}
 
-      {/* 식약처 인증 뱃지 */}
       {mfdsInfo && (
         <div className="px-5 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2">
           <Database size={13} className="text-[#0192F5]" />
@@ -515,7 +696,6 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
         </div>
       )}
 
-      {/* 제품허가 정보 뱃지 */}
       {result.permitFound && (
         <div className="px-5 py-2 bg-purple-50 border-b border-purple-100 flex items-center gap-2">
           <Shield size={13} className="text-purple-500" />
@@ -526,7 +706,6 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
         </div>
       )}
 
-      {/* 약품 헤더 */}
       <div className="p-5 space-y-3">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -541,15 +720,12 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
         <p className="text-sm text-slate-600 leading-relaxed">{result.description}</p>
       </div>
 
-      {/* 핵심 정보 — 식약처 우선, 없으면 AI */}
       <div className="mx-4 mb-4 bg-white rounded-2xl divide-y divide-slate-100 shadow-sm">
         <InfoRow icon={Clock} label="복용 방법" value={mfdsInfo?.useMethodQesitm || result.dosageGuide} source={mfdsInfo?.useMethodQesitm ? '식약처' : 'AI'} />
         <InfoRow icon={Shield} label="주의사항" value={mfdsInfo?.atpnQesitm || result.warnings} source={mfdsInfo?.atpnQesitm ? '식약처' : 'AI'} />
         {(mfdsInfo?.seQesitm) && <InfoRow icon={AlertTriangle} label="부작용" value={mfdsInfo.seQesitm} source="식약처" />}
-
       </div>
 
-      {/* 성분 태그 */}
       {result.activeIngredients?.length > 0 && (
         <div className="px-4 pb-3 flex flex-wrap gap-1.5">
           {result.activeIngredients.map((ing, i) => (
@@ -558,7 +734,6 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
         </div>
       )}
 
-      {/* 식약처 상세 정보 토글 */}
       {mfdsInfo && (
         <div className="mx-4 mb-4">
           <button onClick={() => setShowMfds(!showMfds)} className="w-full py-2.5 rounded-2xl border border-blue-100 bg-blue-50 text-xs text-[#0192F5] font-semibold flex items-center justify-center gap-2">
@@ -571,7 +746,6 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
               {mfdsInfo.atpnWarnQesitm && <MfdsRow label="경고" value={mfdsInfo.atpnWarnQesitm} highlight />}
               {mfdsInfo.intrcQesitm && <MfdsRow label="상호작용" value={mfdsInfo.intrcQesitm} />}
               {mfdsInfo.depositMethodQesitm && <MfdsRow label="보관법" value={mfdsInfo.depositMethodQesitm} />}
-              {/* 제품허가 추가 정보 */}
               {result.permitFound && (
                 <>
                   {result.permitDate    && <MfdsRow label="허가일자"  value={result.permitDate} />}
@@ -588,7 +762,6 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
         </div>
       )}
 
-      {/* 병용 주의 */}
       {result.interactions?.length > 0 && (
         <div className="mx-4 mb-4 p-3 bg-amber-50 rounded-2xl border border-amber-100">
           <p className="text-xs font-bold text-amber-700 mb-1 flex items-center gap-1">
@@ -598,35 +771,97 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
         </div>
       )}
 
-      {/* 신뢰도 */}
-      {result.confidence !== undefined && (
-        <div className="mx-4 mb-4">
-          {(() => {
-            const pct = Math.round((result.confidence || 0) * 100)
-            const color = pct >= 80 ? '#0192F5' : pct >= 60 ? '#f59e0b' : '#ef4444'
-            const bg = pct >= 80 ? '#eff6ff' : pct >= 60 ? '#fffbeb' : '#fef2f2'
-            const border = pct >= 80 ? '#bfdbfe' : pct >= 60 ? '#fde68a' : '#fecaca'
-            return (
-              <div className="rounded-2xl p-4 flex items-center gap-4" style={{ background: bg, border: `2px solid ${border}` }}>
-                <div className="text-center shrink-0">
-                  <p className="font-black text-4xl leading-none" style={{ color }}>{pct}%</p>
-                  <p className="text-xs font-medium mt-1" style={{ color }}>인식 신뢰도</p>
-                </div>
-                <div className="flex-1">
-                  <div className="h-3 bg-white rounded-full overflow-hidden">
-                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
-                  </div>
-                  <p className="text-xs mt-2 font-medium" style={{ color }}>
-                    {pct >= 80 ? '✅ 신뢰할 수 있는 결과예요' : pct >= 60 ? '⚠️ 참고용으로만 활용하세요' : '❌ 다시 촬영해보세요'}
-                  </p>
-                </div>
-              </div>
-            )
-          })()}
-        </div>
-      )}
+      {/* 신뢰도 — 3케이스 분기 */}
+      {result.confidence !== undefined && (() => {
+        const pct = Math.round((result.confidence || 0) * 100)
 
-      {/* AI 상담 버튼 */}
+        if (pct >= 80) return (
+          <div className="mx-4 mb-4 rounded-2xl p-4 space-y-3" style={{ background: '#eff6ff', border: '2px solid #bfdbfe' }}>
+            <div className="flex items-center gap-3">
+              <div className="text-center shrink-0">
+                <p className="font-black text-4xl leading-none text-[#0192F5]">{pct}%</p>
+                <p className="text-xs font-medium mt-1 text-[#0192F5]">데이터 일치율</p>
+              </div>
+              <div className="flex-1">
+                <div className="h-3 bg-white rounded-full overflow-hidden">
+                  <div className="h-full rounded-full bg-[#0192F5]" style={{ width: `${pct}%` }} />
+                </div>
+                <p className="text-xs mt-2 font-bold text-[#0192F5]">✅ 식약처 데이터베이스와 일치합니다</p>
+              </div>
+            </div>
+            {result.description && (
+              <div className="bg-white rounded-xl p-3 border border-blue-100">
+                <p className="text-[10px] font-bold text-blue-400 uppercase tracking-wide mb-1">식약처 데이터 분석 결과</p>
+                <p className="text-sm text-slate-700 leading-relaxed font-medium">{result.description}</p>
+              </div>
+            )}
+          </div>
+        )
+
+        if (pct >= 50) return (
+          <div className="mx-4 mb-4 rounded-2xl overflow-hidden" style={{ border: '2px solid #fde68a' }}>
+            <div className="px-4 py-3 flex items-center gap-2" style={{ background: '#fffbeb' }}>
+              <span className="text-base">⚠️</span>
+              <p className="text-xs font-black text-amber-700 flex-1">데이터 정밀 분석 중</p>
+              <span className="text-xs font-black text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">일치율 {pct}%</span>
+            </div>
+            <div className="px-4 py-3 bg-white space-y-2">
+              <p className="text-sm text-slate-700 leading-relaxed">
+                식약처 데이터베이스와 <span className="font-black text-amber-600">{pct}% 일치</span>하는 의약품 정보는{' '}
+                <span className="font-black text-slate-800">{result.summary}</span>입니다.
+                {result.description ? ` 해당 의약품은 주로 ${result.description}` : ''}
+              </p>
+              <div className="rounded-xl p-3" style={{ background: '#fffbeb', border: '1px solid #fde68a' }}>
+                <p className="text-xs text-amber-700 leading-relaxed">
+                  <span className="font-black">[주의]</span> 분석 일치율이 80% 미만인 경우, 사진 상태에 따라 정보 왜곡이 발생할 수 있습니다.
+                  본 앱은 데이터 대조 결과만을 제공하며, <span className="font-bold">최종 복용 결정에 따른 책임은 전적으로 사용자에게 있습니다.</span>
+                </p>
+              </div>
+              <a
+                href="https://www.a-ha.io/topic/%EC%95%BD%EC%98%81%EC%96%91%EC%A0%9C/%EC%95%BD%EB%B3%B5%EC%9A%A9?order=answerRegistration"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 w-full py-3 rounded-xl font-bold text-sm text-white"
+                style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
+              >
+                💬 아하 게시판에서 약사에게 질문하기 →
+              </a>
+            </div>
+          </div>
+        )
+
+        return (
+          <div className="mx-4 mb-4 rounded-2xl overflow-hidden" style={{ border: '2px solid #fecaca' }}>
+            <div className="px-4 py-3 flex items-center gap-2 bg-red-500">
+              <span className="text-base">🚫</span>
+              <p className="text-sm font-black text-white flex-1">복용 위험 감지 — AI 분석 중단</p>
+              <span className="text-xs font-bold text-red-200 bg-red-600 px-2 py-0.5 rounded-full">{pct}%</span>
+            </div>
+            <div className="px-4 py-4 bg-red-50 space-y-3">
+              <p className="text-sm text-red-800 leading-relaxed font-medium">
+                현재 데이터 일치율이 현저히 낮아({pct}% 미만), 잘못된 정보 제공으로 인한
+                <span className="font-black"> 약물 오남용 위험이 감지</span>되었습니다.
+              </p>
+              <div className="bg-white rounded-xl p-3 border border-red-100">
+                <p className="text-xs text-red-600 leading-relaxed">
+                  사용자의 안전을 최우선으로 하여 AI 분석 결과를 표시하지 않습니다.
+                  아래 게시판을 통해 전문 약사에게 질문하여 안전한 복용 안내를 받으십시오.
+                </p>
+              </div>
+              <a
+                href="https://www.a-ha.io/topic/%EC%95%BD%EC%98%81%EC%96%91%EC%A0%9C/%EC%95%BD%EB%B3%B5%EC%9A%A9?order=answerRegistration"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl font-black text-sm text-white"
+                style={{ background: 'linear-gradient(135deg, #ef4444, #dc2626)' }}
+              >
+                💬 아하 게시판에서 약사에게 질문하기 →
+              </a>
+            </div>
+          </div>
+        )
+      })()}
+
       <div className="p-4 pt-0">
         <button onClick={onChat} className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-[#0192F5] to-[#40BEFD] text-white font-bold flex items-center justify-center gap-2 shadow-md active:scale-95 transition-all">
           <MessageCircle size={18} /> AI 약사에게 더 물어보기
@@ -638,7 +873,6 @@ function ResultCard({ result, mfdsInfo, onChat, onRetry }) {
 
 function InfoRow({ icon: Icon, label, value, source }) {
   if (!value) return null
-  // 식약처 텍스트 100자로 요약
   const displayValue = value.length > 100 ? value.slice(0, 100) + '...' : value
   return (
     <div className="flex gap-3 p-3">
@@ -907,8 +1141,7 @@ function AdminView({ logs, onBack }) {
   )
 }
 
-// ─── 카메라 뷰 ────────────────────────────────────────────────────────────────
-// ─── 온보딩 슬라이드 ─────────────────────────────────────────────────────────
+// ─── 온보딩 슬라이드 ──────────────────────────────────────────────────────────
 function OnboardingSlides({ onComplete }) {
   const [current, setCurrent] = useState(0)
   const slides = [
@@ -951,27 +1184,19 @@ function OnboardingSlides({ onComplete }) {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#fff', zIndex: 100, display: 'flex', flexDirection: 'column', maxWidth: 480, margin: '0 auto' }}>
-      {/* 스킵 버튼 */}
       <div style={{ padding: '16px 20px', display: 'flex', justifyContent: 'flex-end' }}>
         <button onClick={onComplete} style={{ fontSize: 13, color: '#AAA', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
           건너뛰기
         </button>
       </div>
-
-      {/* 메인 컨텐츠 */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 32px', gap: 24 }}>
-        {/* 이모지 */}
         <div style={{ width: 100, height: 100, borderRadius: '50%', background: `${s.color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 52 }}>
           {s.emoji}
         </div>
-
-        {/* 제목 */}
         <div style={{ textAlign: 'center' }}>
           <h2 style={{ fontSize: 24, fontWeight: 700, color: '#111', letterSpacing: '-0.5px', marginBottom: 10 }}>{s.title}</h2>
           <p style={{ fontSize: 15, color: '#666', lineHeight: 1.7, whiteSpace: 'pre-line' }}>{s.desc}</p>
         </div>
-
-        {/* 첫 슬라이드면 특별 UI, 나머지는 팁 리스트 */}
         {current === 0 ? (
           <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', gap: 10 }}>
             {['AI 약품 분석', '식약처 공식 데이터 연동', '처방약 · 일반약 모두 가능'].map((feat, i) => (
@@ -994,17 +1219,12 @@ function OnboardingSlides({ onComplete }) {
           </div>
         )}
       </div>
-
-      {/* 하단 */}
       <div style={{ padding: '20px 24px 40px', display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center' }}>
-        {/* 인디케이터 */}
         <div style={{ display: 'flex', gap: 6 }}>
           {slides.map((_, i) => (
             <div key={i} onClick={() => setCurrent(i)} style={{ width: i === current ? 20 : 6, height: 6, borderRadius: 3, background: i === current ? s.color : '#DDD', cursor: 'pointer', transition: 'all 0.3s' }} />
           ))}
         </div>
-
-        {/* 다음 버튼 */}
         <button onClick={next} style={{ width: '100%', padding: '17px 0', borderRadius: 16, background: `linear-gradient(135deg, ${s.color}, ${s.color}CC)`, color: '#fff', border: 'none', fontSize: 16, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', letterSpacing: '-0.2px' }}>
           {current < slides.length - 1 ? '다음' : '시작하기 →'}
         </button>
@@ -1013,6 +1233,7 @@ function OnboardingSlides({ onComplete }) {
   )
 }
 
+// ─── 카메라 뷰 ────────────────────────────────────────────────────────────────
 function CameraView({ onCapture, onCancel }) {
   const videoRef = useRef(null)
   const streamRef = useRef(null)
@@ -1077,11 +1298,10 @@ function CameraView({ onCapture, onCancel }) {
 }
 
 // ─── 홈 뷰 ───────────────────────────────────────────────────────────────────
-function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, combinedAnalysis, analyzing, mfdsLoading, onCameraCapture, onGalleryUpload, onChat, onHistory, onRetry, previewUrl, logCount, symptom, onSymptomChange, onLogoTap }) {
+function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, combinedAnalysis, durWarnings, analyzing, mfdsLoading, onCameraCapture, onGalleryUpload, onChat, onHistory, onRetry, previewUrl, logCount, symptom, onSymptomChange, onLogoTap }) {
   const [selectedPillIdx, setSelectedPillIdx] = useState(0)
   const fileInputRef = useRef(null)
   const [step, setStep] = useState(previewUrl || analysisResult ? 2 : 1)
-  // previewUrl이 생기거나 analyzing 시작하면 step 2로 강제 전환
   if ((previewUrl || analyzing || mfdsLoading) && step === 1) setStep(2)
 
   const handleFileChange = (e) => {
@@ -1191,6 +1411,9 @@ function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, combi
             )}
           </div>
         )}
+        {!analyzing && !mfdsLoading && durWarnings?.length > 0 && (
+          <DurWarningCard warnings={durWarnings} />
+        )}
         {!analyzing && !mfdsLoading && pillResults.length > 0 && (
           <PillListCard
             pillResults={pillResults}
@@ -1267,6 +1490,7 @@ export default function App() {
   const [mfdsInfo, setMfdsInfo] = useState(null)
   const [pillResults, setPillResults] = useState([])
   const [combinedAnalysis, setCombinedAnalysis] = useState(null)
+  const [durWarnings, setDurWarnings] = useState([])
   const [analysisLogs, setAnalysisLogs] = useState([])
   const [currentUser, setCurrentUser] = useState(null)
   const [authReady, setAuthReady] = useState(false)
@@ -1277,7 +1501,6 @@ export default function App() {
   const [logoTapCount, setLogoTapCount] = useState(0)
   const logoTapTimer = useRef(null)
 
-  // Firebase 익명 인증
   useEffect(() => {
     if (!auth) { setAuthReady(true); return }
     const unsub = onAuthStateChanged(auth, async (user) => {
@@ -1291,7 +1514,6 @@ export default function App() {
     return unsub
   }, [])
 
-  // Firestore 구독
   useEffect(() => {
     if (!db || !currentUser || !authReady) return
     const q = query(LOGS_PATH(), orderBy('createdAt', 'desc'), limit(20))
@@ -1328,20 +1550,20 @@ export default function App() {
     })
   }, [])
 
-  // AI 분석 + 식약처 낱알식별 API 연동
   const runAnalysis = useCallback(async (base64, mimeType = 'image/jpeg') => {
     setAnalyzing(true)
     setMfdsInfo(null)
     setAnalysisResult(null)
     setPillResults([])
+    setDurWarnings([])
 
     let aiResult
     if (!GROQ_API_KEY) {
       await new Promise(r => setTimeout(r, 1500))
       aiResult = {
         pills: [
-          { color: '하양', shape: '원형', form: '정제', imprint: '', size: '중', description: '흰색 원형 알약' },
-          { color: '분홍', shape: '타원형', form: '정제', imprint: '', size: '소', description: '분홍색 타원형 알약' },
+          { drugName: '', color: '하양', shape: '원형', form: '정제', imprint: '', size: '중', description: '흰색 원형 알약' },
+          { drugName: '', color: '분홍', shape: '타원형', form: '정제', imprint: '', size: '소', description: '분홍색 타원형 알약' },
         ],
         totalCount: 2,
         symptomHint: 'API 키 미설정'
@@ -1381,9 +1603,16 @@ export default function App() {
       setPillResults(results)
       setAnalysisResult(results[0])
 
-      // 종합 분석 (여러 알약 + 증상 비교)
       const combined = await analyzePillsCombined(results, symptom)
       setCombinedAnalysis(combined)
+
+      // DUR 체크
+      const userProfile = {
+        isPregnant: userConditions.includes('임신') || userConditions.includes('임부'),
+        isElderly:  userConditions.includes('노인') || userConditions.includes('고령'),
+      }
+      const dur = await runDurCheck(results, userProfile)
+      setDurWarnings(dur)
 
       if (results[0]?.statusCode !== 'unidentified') {
         await saveToFirestore(results[0])
@@ -1445,10 +1674,11 @@ export default function App() {
     <>
       <HomeView
         userConditions={userConditions} analysisResult={analysisResult} mfdsInfo={mfdsInfo}
-        pillResults={pillResults} combinedAnalysis={combinedAnalysis} analyzing={analyzing} mfdsLoading={mfdsLoading}
+        pillResults={pillResults} combinedAnalysis={combinedAnalysis} durWarnings={durWarnings}
+        analyzing={analyzing} mfdsLoading={mfdsLoading}
         onCameraCapture={() => setView('camera')} onGalleryUpload={handleGalleryUpload}
         onChat={() => setView('chat')} onHistory={() => setView('history')}
-        onRetry={() => { setPreviewUrl(null); setAnalysisResult(null); setMfdsInfo(null); setPillResults([]); setCombinedAnalysis(null) }}
+        onRetry={() => { setPreviewUrl(null); setAnalysisResult(null); setMfdsInfo(null); setPillResults([]); setCombinedAnalysis(null); setDurWarnings([]) }}
         previewUrl={previewUrl} logCount={analysisLogs.length}
         symptom={symptom} onSymptomChange={setSymptom} onLogoTap={handleLogoTap}
       />
