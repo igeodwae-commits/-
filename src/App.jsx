@@ -1542,13 +1542,8 @@ function HomeView({ userConditions, analysisResult, mfdsInfo, pillResults, combi
   const [selectedPillIdx, setSelectedPillIdx] = useState(0)
   const fileInputRef = useRef(null)
   const [step, setStep] = useState(previewUrl || analysisResult ? 2 : 1)
-  const selectedPill = pillResults[selectedPillIdx] || pillResults[0]
-
-  useEffect(() => {
-    if ((previewUrl || analyzing || mfdsLoading) && step === 1) {
-      setStep(2)
-    }
-  }, [previewUrl, analyzing, mfdsLoading, step])
+  // previewUrl이 생기거나 analyzing 시작하면 step 2로 강제 전환
+  if ((previewUrl || analyzing || mfdsLoading) && step === 1) setStep(2)
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0]
