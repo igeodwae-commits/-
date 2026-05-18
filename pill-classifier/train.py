@@ -250,7 +250,148 @@ def collect_data():
 
     df = pd.DataFrame(success_rows)
     df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-    print(f'  ✅ 완료! {len(df):,}장 저장')
+    print(f'  ✅ 식약처 수집 완료! {len(df):,}장 저장')
+    return df
+
+
+# ════════════════════════════════════════════════════════════
+#  Phase 1-3: 웹 이미지 검색으로 클래스당 추가 이미지 수집
+#  네이버 이미지 검색 (API 키 불필요, HTML 파싱)
+# ════════════════════════════════════════════════════════════
+
+WEB_IMAGE_DIR = DATA_DIR / 'web_images'
+WEB_IMAGES_PER_PILL = 4   # 약 하나당 최대 4장 추가 수집
+WEB_CSV_PATH = DATA_DIR / 'web_pills.csv'
+
+def search_naver_images(query, num=5):
+    """네이버 이미지 검색 (HTML 파싱, API 키 불필요)"""
+    import re, urllib.parse
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                       'AppleWebKit/537.36 (KHTML, like Gecko) '
+                       'Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://search.naver.com/',
+    }
+    encoded = urllib.parse.quote(f'{query} 알약')
+    url = f'https://search.naver.com/search.naver?where=image&sm=tab_jum&query={encoded}'
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        # 썸네일 URL 추출 (네이버 이미지 검색 결과에서)
+        pattern = r'"thumb":"(https?://[^"]+)"'
+        matches = re.findall(pattern, resp.text)
+        if not matches:
+            # 대체 패턴
+            pattern = r'data-source="(https?://[^"]+\.(?:jpg|jpeg|png|webp))'
+            matches = re.findall(pattern, resp.text, re.IGNORECASE)
+        if not matches:
+            pattern = r'src="(https?://search\.pstatic\.net/[^"]+)"'
+            matches = re.findall(pattern, resp.text)
+        return matches[:num]
+    except:
+        return []
+
+
+def search_google_images(query, num=5):
+    """구글 이미지 검색 (HTML 파싱, API 키 불필요)"""
+    import re, urllib.parse
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                       'AppleWebKit/537.36 (KHTML, like Gecko) '
+                       'Chrome/120.0.0.0 Safari/537.36',
+    }
+    encoded = urllib.parse.quote(f'{query} 약 알약')
+    url = f'https://www.google.com/search?q={encoded}&tbm=isch&hl=ko'
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        pattern = r'\["(https?://[^"]+\.(?:jpg|jpeg|png|webp))"'
+        matches = re.findall(pattern, resp.text, re.IGNORECASE)
+        # 구글 자체 이미지 제외
+        filtered = [u for u in matches if 'google' not in u and 'gstatic' not in u]
+        return filtered[:num]
+    except:
+        return []
+
+
+def download_web_image(url, save_path):
+    """웹 이미지 다운로드 (유효성 검증 포함)"""
+    if save_path.exists():
+        return True
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                           'AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+        }
+        resp = requests.get(url, headers=headers, timeout=10, stream=True)
+        resp.raise_for_status()
+        # 크기 제한 (10MB 이상 스킵)
+        if int(resp.headers.get('content-length', 0)) > 10 * 1024 * 1024:
+            return False
+        img = Image.open(BytesIO(resp.content)).convert('RGB')
+        # 너무 작거나 큰 이미지 제외
+        if img.width < 50 or img.height < 50:
+            return False
+        if img.width > 4000 or img.height > 4000:
+            img.thumbnail((1024, 1024))
+        img.save(str(save_path), 'JPEG', quality=85)
+        return True
+    except:
+        return False
+
+
+def collect_web_images(pill_names):
+    """웹 검색으로 약 이름별 추가 이미지 수집"""
+    if WEB_CSV_PATH.exists():
+        df = pd.read_csv(WEB_CSV_PATH)
+        print(f'  ✅ 기존 웹 이미지 로드: {len(df):,}장')
+        return df
+
+    WEB_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(f'  대상: {len(pill_names):,}종 × 최대 {WEB_IMAGES_PER_PILL}장')
+    print(f'  (네이버 + 구글 이미지 검색)')
+
+    web_rows = []
+    failed = 0
+    pbar = tqdm(pill_names, desc='  웹 이미지 수집')
+
+    for pill_name in pbar:
+        # 약 이름으로 검색 (짧은 이름은 '정' '캡슐' 등 붙여서)
+        query = pill_name
+        if len(pill_name) < 4:
+            query = f'{pill_name} 알약'
+
+        # 네이버 먼저, 부족하면 구글 보충
+        urls = search_naver_images(query, WEB_IMAGES_PER_PILL)
+        if len(urls) < WEB_IMAGES_PER_PILL:
+            urls += search_google_images(query, WEB_IMAGES_PER_PILL - len(urls))
+
+        if not urls:
+            failed += 1
+            continue
+
+        pill_dir = WEB_IMAGE_DIR / safe_dirname(pill_name)
+        pill_dir.mkdir(exist_ok=True)
+
+        for i, url in enumerate(urls[:WEB_IMAGES_PER_PILL]):
+            save_path = pill_dir / f'web_{i}.jpg'
+            if download_web_image(url, save_path):
+                web_rows.append({
+                    'item_code': f'WEB_{safe_dirname(pill_name)}_{i}',
+                    'item_name': pill_name,
+                    'image_path': str(save_path),
+                    'source': 'web',
+                })
+
+        # 레이트 리밋 (차단 방지)
+        time.sleep(0.5)
+        pbar.set_postfix(수집=len(web_rows), 실패=failed)
+
+    df = pd.DataFrame(web_rows)
+    if len(df) > 0:
+        df.to_csv(WEB_CSV_PATH, index=False, encoding='utf-8-sig')
+    print(f'  ✅ 웹 이미지 수집 완료! {len(df):,}장 ({len(df) / max(1, len(pill_names)):.1f}장/종)')
     return df
 
 
@@ -957,8 +1098,26 @@ def main():
     print('  ArcFace + 고급증강 + CutMix + OOD 방어 | M4 Pro')
     print('=' * 60)
 
-    # ── 데이터 수집 ──
+    # ── 데이터 수집 (식약처 API 2개) ──
     df = collect_data()
+
+    # ── 웹 이미지 추가 수집 (클래스당 여러 장) ──
+    pill_names = sorted(df['item_name'].unique())
+    print(f'\n🌐 Phase 1-2b: 웹 이미지 수집 ({len(pill_names):,}종)')
+    web_df = collect_web_images(pill_names)
+
+    if len(web_df) > 0:
+        # 웹 이미지를 기존 df와 합침 (같은 item_name → 같은 클래스)
+        web_df_clean = web_df[['item_code', 'item_name', 'image_path']].copy()
+        # 식약처 df에 없는 컬럼은 빈값
+        for col in ['shape', 'color_front', 'color_back', 'print_front', 'print_back']:
+            if col not in web_df_clean.columns:
+                web_df_clean[col] = ''
+        df = pd.concat([df, web_df_clean], ignore_index=True)
+        print(f'  📊 식약처 + 웹 합산: {len(df):,}장')
+        imgs_per_class = df.groupby('item_name').size()
+        multi = (imgs_per_class > 1).sum()
+        print(f'  2장 이상 보유 클래스: {multi:,}종 / {len(pill_names):,}종')
 
     # ── 네거티브 이미지 생성 ──
     print('\n🎨 Phase 1-3: 네거티브 이미지 생성 (약이 아닌 것)')
