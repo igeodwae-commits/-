@@ -102,11 +102,60 @@ function mfdsDevProxy(env) {
   }
 }
 
+// DL 모델 추론 서버 프록시 (ml/server.py → localhost:5001)
+function modelDevProxy() {
+  return {
+    name: 'model-dev-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/model-inference', async (req, res) => {
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+
+        if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return }
+
+        try {
+          // health 체크는 GET
+          const subPath = req.url?.replace(/\?.*$/, '') || ''
+          const targetUrl = `http://localhost:5001/api/model-inference${subPath}`
+
+          if (req.method === 'GET') {
+            const upstream = await fetch(targetUrl)
+            const text = await upstream.text()
+            res.statusCode = upstream.status
+            res.end(text)
+            return
+          }
+
+          // POST — 이미지 추론
+          const chunks = []
+          for await (const chunk of req) chunks.push(chunk)
+          const body = Buffer.concat(chunks).toString('utf8')
+
+          const upstream = await fetch(targetUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+          })
+          const text = await upstream.text()
+          res.statusCode = upstream.status
+          res.end(text)
+        } catch (error) {
+          // 모델 서버 미실행 → 503 (앱에서 Groq 폴백)
+          res.statusCode = 503
+          res.end(JSON.stringify({ error: 'DL 모델 서버 미연결', fallback: true }))
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
 
   return {
-  plugins: [react(), mfdsDevProxy(env), groqDevProxy(env)],
+  plugins: [react(), mfdsDevProxy(env), groqDevProxy(env), modelDevProxy()],
   server: {
     port: 3000,
     host: true

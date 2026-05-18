@@ -31,6 +31,8 @@ const GROQ_MODEL = 'llama-3.3-70b-versatile'
 const GROQ_VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct'
 // Groq API는 CORS 미지원 → 서버리스 프록시 경유 (키도 서버 환경변수로만 보관)
 const GROQ_PROXY = '/api/groq-proxy'
+// DL 모델 추론 서버 (학습 완료 후 ml/server.py 실행 시 활성화)
+const MODEL_PROXY = '/api/model-inference'
 
 // ─── 식약처 API 엔드포인트 (Vercel 프록시 경유) ───────────────────────────────
 const MFDS_PROXY = '/api/mfds-proxy'
@@ -78,6 +80,24 @@ async function safeFetchGroq(body, retries = 3, delay = 1000) {
       if (i === retries - 1) throw e
       await new Promise(r => setTimeout(r, delay * Math.pow(2, i)))
     }
+  }
+}
+
+// ─── DL 모델 추론 (결정적, 같은 사진 = 같은 결과) ────────────────────────────
+async function fetchModelInference(base64WithPrefix) {
+  try {
+    const res = await fetch(MODEL_PROXY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64WithPrefix }),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    if (data.error || !data.success) return null
+    return data
+  } catch {
+    // 모델 서버 미실행 → null (Groq 폴백)
+    return null
   }
 }
 
@@ -1781,22 +1801,111 @@ export default function App() {
     setDurWarnings([])
 
     let aiResult
-    try {
-      const data = await safeFetchGroq({
-        model: GROQ_VISION_MODEL,
-        messages: [{ role: 'user', content: [
-          { type: 'text', text: buildVisionPrompt(userConditions, symptom) },
-          { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } }
-        ]}],
-        temperature: 0.1,
-        max_tokens: 1000,
+    const imageDataUrl = `data:${mimeType};base64,${base64}`
+
+    // ── 1단계: DL 모델 시도 (결정적, 같은 사진 = 같은 결과) ──
+    const dlResult = await fetchModelInference(imageDataUrl)
+
+    if (dlResult && !dlResult.isPill) {
+      // OOD 방어: 약이 아닌 이미지
+      setAnalysisResult({
+        statusCode: 'unidentified',
+        summary: '약이 아닙니다',
+        description: '실제 약 이미지를 촬영해주세요. (그림, 사탕, 동전 등은 인식되지 않습니다)',
+        confidence: 0,
       })
-      const raw = data.choices?.[0]?.message?.content || '{}'
-      aiResult = JSON.parse(raw.replace(/```json|```/g, '').trim())
-    } catch (e) {
-      setAnalysisResult({ statusCode: 'unidentified', summary: '분석 실패', description: e.message, confidence: 0 })
       setAnalyzing(false)
       return
+    }
+
+    if (dlResult?.isPill && dlResult.pills?.length > 0 && dlResult.confidence >= 0.75) {
+      // DL 모델 높은 확신 → Groq 없이 바로 식약처 조회
+      console.log(`🧠 DL 모델 직행 (유사도: ${(dlResult.confidence * 100).toFixed(1)}%)`)
+      aiResult = {
+        pills: dlResult.pills.map((p, i) => ({
+          drugName: p.drugName,
+          color: '', shape: '', form: '', imprint: '', size: '',
+          confidence: p.similarity,
+          description: `DL 모델 매칭 (유사도 ${(p.similarity * 100).toFixed(1)}%)`,
+        })),
+        totalCount: dlResult.pills.length,
+        symptomHint: '',
+      }
+    } else if (dlResult?.isPill && dlResult.pills?.length > 0) {
+      // DL 모델 중간 확신 (0.45~0.75) → Groq로 교차검증
+      console.log(`🔀 DL+Groq 교차검증 (DL 유사도: ${(dlResult.confidence * 100).toFixed(1)}%)`)
+      try {
+        const data = await safeFetchGroq({
+          model: GROQ_VISION_MODEL,
+          messages: [{ role: 'user', content: [
+            { type: 'text', text: buildVisionPrompt(userConditions, symptom) },
+            { type: 'image_url', image_url: { url: imageDataUrl } }
+          ]}],
+          temperature: 0.1,
+          max_tokens: 1000,
+        })
+        const raw = data.choices?.[0]?.message?.content || '{}'
+        const groqResult = JSON.parse(raw.replace(/```json|```/g, '').trim())
+
+        // Groq 결과에 DL confidence 병합 (DL이 더 안정적이므로 DL 기준)
+        if (groqResult.pills?.length > 0) {
+          const dlTopName = dlResult.pills[0]?.drugName || ''
+          groqResult.pills.forEach(pill => {
+            // Groq 약 이름이 DL Top1과 일치하면 confidence 부스트
+            if (dlTopName && pill.drugName && pill.drugName.includes(dlTopName.slice(0, 4))) {
+              pill.confidence = Math.max(pill.confidence || 0, dlResult.confidence)
+            }
+            // DL confidence를 기본값으로 (Groq보다 안정적)
+            if (!pill.confidence || pill.confidence < dlResult.confidence) {
+              pill.confidence = dlResult.confidence
+            }
+          })
+          aiResult = groqResult
+        } else {
+          // Groq가 인식 못하면 DL 결과 사용
+          aiResult = {
+            pills: dlResult.pills.map(p => ({
+              drugName: p.drugName,
+              color: '', shape: '', form: '', imprint: '', size: '',
+              confidence: p.similarity,
+              description: `DL 모델 매칭 (유사도 ${(p.similarity * 100).toFixed(1)}%)`,
+            })),
+            totalCount: dlResult.pills.length,
+            symptomHint: '',
+          }
+        }
+      } catch {
+        // Groq 실패해도 DL 결과로 진행
+        aiResult = {
+          pills: dlResult.pills.map(p => ({
+            drugName: p.drugName,
+            color: '', shape: '', form: '', imprint: '', size: '',
+            confidence: p.similarity,
+            description: `DL 모델 매칭 (유사도 ${(p.similarity * 100).toFixed(1)}%)`,
+          })),
+          totalCount: dlResult.pills.length,
+          symptomHint: '',
+        }
+      }
+    } else {
+      // ── DL 모델 미연결 또는 실패 → 기존 Groq 단독 ──
+      try {
+        const data = await safeFetchGroq({
+          model: GROQ_VISION_MODEL,
+          messages: [{ role: 'user', content: [
+            { type: 'text', text: buildVisionPrompt(userConditions, symptom) },
+            { type: 'image_url', image_url: { url: imageDataUrl } }
+          ]}],
+          temperature: 0.1,
+          max_tokens: 1000,
+        })
+        const raw = data.choices?.[0]?.message?.content || '{}'
+        aiResult = JSON.parse(raw.replace(/```json|```/g, '').trim())
+      } catch (e) {
+        setAnalysisResult({ statusCode: 'unidentified', summary: '분석 실패', description: e.message, confidence: 0 })
+        setAnalyzing(false)
+        return
+      }
     }
 
     setAnalyzing(false)
